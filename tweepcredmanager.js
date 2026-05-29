@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Tweepcred Manager
 // @namespace    https://github.com/HyperboreanSlug/Tweepcred-Manager
-// @version      1.0.1
+// @version      1.0.2
 // @description  All-in-one toolkit for managing your X.com "tweepcred" reputation: estimate your score, fix your follower/following ratio (mass unfollow non-followers), and clean up old/low-engagement tweets, likes and DMs — all from one panel.
 // @author       HyperboreanSlug (merges TweetXer by Luca Hammer et al. + Mass Unfollow by Shayan Taherkhani)
 // @license      MIT
@@ -59,7 +59,7 @@
      *  CORE — shared state, auth and utilities used by every module          *
      * ===================================================================== */
     const Core = {
-        version: '1.0.1',
+        version: '1.0.2',
         baseUrl: `https://${window.location.hostname}`,
         // Public web bearer token (same one the X web app ships). Inherited from
         // TweetXer; required for the GraphQL delete/like endpoints.
@@ -460,13 +460,21 @@
      * ===================================================================== */
     const Dashboard = {
         firstShow: true,
+        // UserByScreenName GraphQL query id. X rotates these; if the profile fetch
+        // returns a non-200, copy the current id from the DevTools Network tab.
+        userQueryId: 'xc8f1g7BYqr6VTzTPvNlYg',
+        _statsFetched: false,
+        _statsFetching: false,
 
         onShow() {
             if (this.firstShow) {
                 this.render();
                 this.firstShow = false;
-                this.autofill();
             }
+            // Re-run on every visit so values fill in once you've reached your
+            // profile (and so the API fetch gets another chance). Existing/edited
+            // fields are never overwritten.
+            this.autofill();
         },
 
         render() {
@@ -517,14 +525,22 @@
             });
         },
 
-        // Try to read followers/following/tweets/avatar/bio from the page DOM.
+        // Fill only blank fields, so we never clobber values the user typed.
+        setIfEmpty(id, val) {
+            if (val == null || val === '') return;
+            const el = UI.el(id);
+            if (el && el.value.trim() === '') el.value = val;
+        },
+
+        // Read whatever the page DOM exposes, then fetch authoritative numbers
+        // from the API (which works from any page and reliably includes the
+        // total-tweet count the profile DOM often omits).
         autofill() {
-            // counts from profile header anchors
+            // counts from profile header anchors (only present on a profile page)
             const grab = (suffixes) => {
                 for (const sfx of suffixes) {
                     const a = document.querySelector(`a[href$="${sfx}"]`);
                     if (a) {
-                        // prefer the bold count span's title/text
                         const strong = a.querySelector('span');
                         const n = Core.parseCount(a.getAttribute('title') || (strong && strong.textContent) || a.textContent);
                         if (n != null) return n;
@@ -532,17 +548,15 @@
                 }
                 return null;
             };
-            const followers = grab(['/verified_followers', '/followers']);
-            const following = grab(['/following']);
-            if (followers != null) UI.el('tpm-d-followers').value = followers;
-            if (following != null) UI.el('tpm-d-following').value = following;
+            this.setIfEmpty('tpm-d-followers', grab(['/verified_followers', '/followers']));
+            this.setIfEmpty('tpm-d-following', grab(['/following']));
 
             // tweet count from profile nav ("12.3K posts")
             const navEl = document.querySelector('[data-testid="primaryColumn"] [role="navigation"]') ||
                 document.querySelector('[data-testid="primaryColumn"]');
             if (navEl) {
                 const m = navEl.textContent.match(/([\d.,]+\s*[KM]?)\s+posts/i);
-                if (m) UI.el('tpm-d-tweets').value = Core.parseCount(m[1]) ?? '';
+                if (m) this.setIfEmpty('tpm-d-tweets', Core.parseCount(m[1]));
             }
 
             // account creation year from the join-date span, else snowflake of user id
@@ -554,7 +568,6 @@
                 if (ym) year = parseInt(ym[1], 10);
             }
             if (!year && Core.userId) {
-                // Only decode if the id is large enough to be a Snowflake (post-2013).
                 try {
                     if (BigInt(Core.userId) > 10000000000000000n) {
                         const d = Core.snowflakeToDate(Core.userId);
@@ -562,15 +575,65 @@
                     }
                 } catch (_) { }
             }
-            if (year) UI.el('tpm-d-year').value = year;
+            this.setIfEmpty('tpm-d-year', year);
 
-            // avatar / bio presence
+            // avatar / bio presence (only when those elements are actually on the page)
             const avatar = document.querySelector('a[href$="/photo"] img, [data-testid^="UserAvatar"] img');
             if (avatar) UI.el('tpm-d-avatar').checked = !/default_profile/i.test(avatar.src || '');
             const bio = document.querySelector('[data-testid="UserDescription"]');
-            UI.el('tpm-d-bio').checked = !!(bio && bio.textContent.trim().length);
+            if (bio) UI.el('tpm-d-bio').checked = !!bio.textContent.trim().length;
 
             this.calculate();
+            this.fetchProfileStats();
+        },
+
+        // Authoritative profile stats via UserByScreenName. Fires at most once
+        // per session; fills any blank field (notably total tweets) and sets the
+        // avatar/bio flags from the real account data. Fails quietly so the DOM
+        // values (already filled above) remain on any error.
+        async fetchProfileStats() {
+            if (this._statsFetched || this._statsFetching || !Core.username) return;
+            this._statsFetching = true;
+            try {
+                const variables = JSON.stringify({ screen_name: Core.username, withSafetyModeUserFields: true });
+                const features = JSON.stringify({
+                    hidden_profile_subscriptions_enabled: true, rweb_tipjar_consumption_enabled: true,
+                    responsive_web_graphql_exclude_directive_enabled: true, verified_phone_label_enabled: false,
+                    subscriptions_verification_info_is_identity_verified_enabled: true,
+                    subscriptions_verification_info_verified_since_enabled: true, highlights_tweets_tab_ui_enabled: true,
+                    responsive_web_twitter_article_notes_tab_enabled: true, subscriptions_feature_can_gift_premium: true,
+                    creator_subscriptions_tweet_preview_api_enabled: true,
+                    responsive_web_graphql_skip_user_profile_image_extensions_enabled: false,
+                    responsive_web_graphql_timeline_navigation_enabled: true
+                });
+                const url = `${Core.baseUrl}/i/api/graphql/${this.userQueryId}/UserByScreenName?` + new URLSearchParams({ variables, features });
+                const res = await fetch(url, {
+                    headers: Core.apiHeaders(), referrer: `${Core.baseUrl}/${Core.username}`,
+                    referrerPolicy: 'strict-origin-when-cross-origin', method: 'GET', mode: 'cors',
+                    credentials: 'include', signal: AbortSignal.timeout(8000)
+                });
+                if (res.status !== 200) {
+                    console.log(`[TPM] Profile fetch failed (HTTP ${res.status}). Update Dashboard.userQueryId from the Network tab if this persists.`);
+                    return;
+                }
+                const lg = (await res.json())?.data?.user?.result?.legacy;
+                if (!lg) return;
+                this.setIfEmpty('tpm-d-followers', lg.followers_count);
+                this.setIfEmpty('tpm-d-following', lg.friends_count);
+                this.setIfEmpty('tpm-d-tweets', lg.statuses_count);
+                if (lg.created_at) {
+                    const y = new Date(lg.created_at).getFullYear();
+                    if (y > 2005) this.setIfEmpty('tpm-d-year', y);
+                }
+                UI.el('tpm-d-avatar').checked = !lg.default_profile_image;
+                UI.el('tpm-d-bio').checked = !!(lg.description && lg.description.trim().length);
+                this._statsFetched = true;
+                this.calculate();
+            } catch (e) {
+                console.log('[TPM] Profile fetch error:', e);
+            } finally {
+                this._statsFetching = false;
+            }
         },
 
         // Transparent, documented heuristic. Each factor is scored 0..1 then
@@ -715,6 +778,7 @@
                   <div><label class="tpm-label">Cooldown min (min)</label><input id="tpm-unf-cmin" type="number" class="tpm-input" value="${s.get('unf.cmin', 15)}" min="1" max="120"></div>
                   <div><label class="tpm-label">Cooldown max (min)</label><input id="tpm-unf-cmax" type="number" class="tpm-input" value="${s.get('unf.cmax', 20)}" min="1" max="180"></div>
                 </div>
+                <label class="tpm-check"><input type="checkbox" id="tpm-unf-mutuals" ${s.get('unf.mutuals', true) ? 'checked' : ''}> Preserve mutual followers (never unfollow people who follow you back)</label>
                 <label class="tpm-check"><input type="checkbox" id="tpm-unf-private" ${s.get('unf.private', true) ? 'checked' : ''}> Skip private / locked accounts</label>
               </div>
 
@@ -762,13 +826,14 @@
             this.PAUSE_MIN = v('tpm-unf-cmin', 15) * 60000;
             this.PAUSE_MAX = v('tpm-unf-cmax', 20) * 60000;
             this.skipPrivate = UI.el('tpm-unf-private').checked;
+            this.preserveMutuals = UI.el('tpm-unf-mutuals').checked;
             this.whitelist = new Set(
                 (UI.el('tpm-unf-white').value.match(/[A-Za-z0-9_]+/g) || []).map(u => u.toLowerCase())
             );
             const s = Core.store;
             s.set('unf.max', this.MAX); s.set('unf.mind', this.MIN_DELAY / 1000); s.set('unf.maxd', this.MAX_DELAY / 1000);
             s.set('unf.cont', this.continuous); s.set('unf.cmin', this.PAUSE_MIN / 60000); s.set('unf.cmax', this.PAUSE_MAX / 60000);
-            s.set('unf.private', this.skipPrivate); s.set('unf.white', [...this.whitelist]);
+            s.set('unf.private', this.skipPrivate); s.set('unf.mutuals', this.preserveMutuals); s.set('unf.white', [...this.whitelist]);
         },
 
         setStatus(kind, text) {
@@ -915,7 +980,7 @@
                 cell.scrollIntoView({ block: 'center', behavior: 'instant' });
                 await Core.sleep(400);
 
-                if (Follow.isMutual(cell)) {
+                if (this.preserveMutuals && Follow.isMutual(cell)) {
                     this.logAction(username, 'skipped', 'Mutual follow'); skipped++;
                     this.setStats(total, skipped, this.MAX - batchCount); continue;
                 }
@@ -932,8 +997,8 @@
 
                 // Final safety net: re-check on the live element immediately before
                 // the click, in case the virtualized list re-rendered the row. A
-                // mutual must never be unfollowed.
-                if (Follow.isMutual(cell)) {
+                // mutual must never be unfollowed while preservation is on.
+                if (this.preserveMutuals && Follow.isMutual(cell)) {
                     this.logAction(username, 'skipped', 'Mutual follow (guard)'); skipped++;
                     this.setStats(total, skipped, this.MAX - batchCount); continue;
                 }
