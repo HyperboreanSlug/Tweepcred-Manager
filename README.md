@@ -34,7 +34,9 @@ The script is built around this constraint:
 | --- | --- | --- | --- |
 | **Unfollow** | 190 per batch | 3-35 s (random, human-like) | ~10-20 / min at defaults |
 | **Cleanup (export)** | 190 per auto-pause | no per-action delay (API-gated) | up to ~190 / 15 min |
-| **Cleanup (slow delete)** | no hard cap | 1.2 s between UI actions | ~50 / min max |
+| **Cleanup (slow delete)** | 190 per auto-pause | 1.2 s between UI actions | up to ~190 / 15 min |
+
+Slow delete drives the browser UI but calls the same `DeleteTweet` endpoint underneath, so it is subject to the same 200/15min cap. The auto-pause applies to slow delete as well.
 
 **Practical guidance:**
 
@@ -114,15 +116,6 @@ Filters and options:
 | **Export bookmarks** | Bookmarks aren't in the official export - grab them as JSON. Read-only, does not count toward delete limits. |
 
 **Supported files:** `tweet-headers.js`, `tweets.js` (enables spare-by-likes), `like.js`, `direct-message-headers.js` / `direct-message-group-headers.js`.
-
-**Approximate throughput at default settings:**
-
-| File / action | Rate |
-| --- | --- |
-| Tweet deletion (export) | ~190 / 15 min, then 15 min pause |
-| Like removal | ~190 / 15 min (X caps this; only recent likes are removable) |
-| DM conversation deletion | ~190 / 15 min, then 15 min pause |
-| Slow delete (from profile) | ~50 / min (UI-gated, no explicit pause needed) |
 
 ## Ideas and roadmap
 
