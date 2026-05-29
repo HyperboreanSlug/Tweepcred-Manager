@@ -1,0 +1,17 @@
+# Dependencies
+node_modules/
+
+# OS / editor junk
+.DS_Store
+Thumbs.db
+*.swp
+.idea/
+.vscode/
+
+# Local data exports — never commit your personal Twitter/X data
+*.zip
+tweet-headers.js
+tweets.js
+like.js
+direct-message*.js
+twitter-bookmarks.json
