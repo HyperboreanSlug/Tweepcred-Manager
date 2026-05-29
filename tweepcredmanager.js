@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Tweepcred Manager
 // @namespace    https://github.com/HyperboreanSlug/Tweepcred-Manager
-// @version      1.0.0
+// @version      1.0.1
 // @description  All-in-one toolkit for managing your X.com "tweepcred" reputation: estimate your score, fix your follower/following ratio (mass unfollow non-followers), and clean up old/low-engagement tweets, likes and DMs — all from one panel.
 // @author       HyperboreanSlug (merges TweetXer by Luca Hammer et al. + Mass Unfollow by Shayan Taherkhani)
 // @license      MIT
@@ -59,7 +59,7 @@
      *  CORE — shared state, auth and utilities used by every module          *
      * ===================================================================== */
     const Core = {
-        version: '1.0.0',
+        version: '1.0.1',
         baseUrl: `https://${window.location.hostname}`,
         // Public web bearer token (same one the X web app ships). Inherited from
         // TweetXer; required for the GraphQL delete/like endpoints.
@@ -819,9 +819,11 @@
                     const u = Follow.getUsername(cell);
                     if (u === 'unknown' || seen.has(u)) continue;
                     seen.add(u); found = true;
+                    const uc = cell.matches?.('[data-testid="UserCell"]') ? cell
+                        : (cell.querySelector?.('[data-testid="UserCell"]') || cell);
                     if (this.whitelist.has(u.toLowerCase())) whitelisted++;
-                    else if (Follow.isMutual(cell)) mutuals++;
-                    else if (Follow.isPrivate(cell)) privates++;
+                    else if (Follow.isMutual(uc)) mutuals++;
+                    else if (Follow.isPrivate(uc)) privates++;
                     else nonFollowers++;
                     this.setStats(nonFollowers, mutuals + privates + whitelisted, '—');
                     this.setNow(`Scanned <strong>${seen.size}</strong> accounts…`);
@@ -893,31 +895,52 @@
                 emptyScrolls = 0;
                 processed.add(username);
 
+                // Resolve to the precise UserCell so the "Follows you" badge, the
+                // username and the unfollow button all belong to the SAME account.
+                // The matched node is frequently the outer cellInnerDiv wrapper.
+                const cell = target.matches?.('[data-testid="UserCell"]')
+                    ? target
+                    : (target.querySelector?.('[data-testid="UserCell"]') || target);
+
                 const lower = username.toLowerCase();
                 if (this.whitelist.has(lower)) {
                     this.logAction(username, 'skipped', 'Whitelisted'); skipped++;
                     this.setStats(total, skipped, this.MAX - batchCount); continue;
                 }
-                if (Follow.isMutual(target)) {
+
+                // Render the cell BEFORE testing mutual/private status. X lazily
+                // renders the "Follows you" badge, so checking an off-screen row
+                // can miss it and unfollow a mutual. Scroll first, let it paint,
+                // THEN check. (This ordering was the mutual-preservation bug.)
+                cell.scrollIntoView({ block: 'center', behavior: 'instant' });
+                await Core.sleep(400);
+
+                if (Follow.isMutual(cell)) {
                     this.logAction(username, 'skipped', 'Mutual follow'); skipped++;
                     this.setStats(total, skipped, this.MAX - batchCount); continue;
                 }
-                if (this.skipPrivate && Follow.isPrivate(target)) {
+                if (this.skipPrivate && Follow.isPrivate(cell)) {
                     this.logAction(username, 'skipped', 'Private/locked'); skipped++;
                     this.setStats(total, skipped, this.MAX - batchCount); continue;
                 }
 
-                target.scrollIntoView({ block: 'center', behavior: 'instant' });
-                await Core.sleep(400);
-                const btn = Follow.findUnfollowButton(target);
+                const btn = Follow.findUnfollowButton(cell);
                 if (!btn) {
                     this.logAction(username, 'skipped', 'No unfollow button'); skipped++;
                     this.setStats(total, skipped, this.MAX - batchCount); continue;
                 }
 
+                // Final safety net: re-check on the live element immediately before
+                // the click, in case the virtualized list re-rendered the row. A
+                // mutual must never be unfollowed.
+                if (Follow.isMutual(cell)) {
+                    this.logAction(username, 'skipped', 'Mutual follow (guard)'); skipped++;
+                    this.setStats(total, skipped, this.MAX - batchCount); continue;
+                }
+
                 this.setNow(`Processing <strong>@${Core.escapeHtml(username)}</strong>`);
                 try {
-                    const anchors = Array.from(target.querySelectorAll('a'));
+                    const anchors = Array.from(cell.querySelectorAll('a'));
                     const blockNav = (e) => e.preventDefault();
                     anchors.forEach(a => a.addEventListener('click', blockNav, true));
                     btn.click();
