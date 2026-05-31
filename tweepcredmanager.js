@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Tweepcred Manager
 // @namespace    https://github.com/HyperboreanSlug/Tweepcred-Manager
-// @version      1.1.0
+// @version      1.1.1
 // @description  All-in-one toolkit for managing your X.com "tweepcred" reputation: estimate your score, fix your follower/following ratio (mass unfollow non-followers), and clean up old/low-engagement tweets, likes and DMs — all from one panel.
 // @author       HyperboreanSlug (merges TweetXer by Luca Hammer et al. + Mass Unfollow by Shayan Taherkhani)
 // @license      MIT
@@ -59,7 +59,7 @@
      *  CORE — shared state, auth and utilities used by every module          *
      * ===================================================================== */
     const Core = {
-        version: '1.1.0',
+        version: '1.1.1',
         baseUrl: `https://${window.location.hostname}`,
         // Public web bearer token (same one the X web app ships). Inherited from
         // TweetXer; required for the GraphQL delete/like endpoints.
@@ -72,11 +72,66 @@
         // creation timestamp in their high bits.
         snowflakeEpoch: 1288834974657n,
 
+        // GraphQL operationName -> queryId, discovered at runtime (X rotates these,
+        // so nothing is hardcoded). Filled by the passive sniffer and resolveQueryId.
+        _queryIds: {},
+
         init() {
             this.ct0 = this.getCookie('ct0');
             this.updateTransactionId();
             this.username = this.getUsernameFromUI();
             this.userId = this.getUserId();
+            this.installQuerySniffer();
+        },
+
+        // Passively learn real queryIds from every GraphQL request the page (or we)
+        // make. URLs look like /i/api/graphql/<queryId>/<OperationName>.
+        installQuerySniffer() {
+            if (window.__tpmSniffer) return;
+            window.__tpmSniffer = true;
+            const self = this;
+            const origFetch = window.fetch;
+            window.fetch = function (input) {
+                try {
+                    const u = typeof input === 'string' ? input : (input && input.url) || '';
+                    const m = u.match(/\/i\/api\/graphql\/([^/]+)\/([^/?]+)/);
+                    if (m) self._queryIds[m[2]] = m[1];
+                } catch (_) { }
+                return origFetch.apply(this, arguments);
+            };
+        },
+
+        // Resolve a queryId for an operation: use a sniffed one if seen, else scan
+        // the loaded X JS bundles for it. Returns null if it can't be found.
+        async resolveQueryId(operationName) {
+            if (this._queryIds[operationName]) return this._queryIds[operationName];
+            const rank = (u) => (/\bapi[.\-]/.test(u) ? 3 : 0) + (/\bmain[.\-]/.test(u) ? 2 : 0) + (/endpoint/i.test(u) ? 2 : 0);
+            let urls = [];
+            try { urls = performance.getEntriesByType('resource').map(r => r.name); } catch (_) { }
+            document.querySelectorAll('script[src]').forEach(s => urls.push(s.src));
+            urls = [...new Set(urls)].filter(n => /abs\.twimg\.com\/responsive-web\/client-web.*\.js(\?|$)/.test(n));
+            urls.sort((a, b) => rank(b) - rank(a));
+            for (const u of urls) {
+                try {
+                    const res = await fetch(u, { credentials: 'omit' });
+                    if (!res.ok) continue;
+                    const id = this._extractQueryId(await res.text(), operationName);
+                    if (id) { this._queryIds[operationName] = id; return id; }
+                } catch (_) { }
+            }
+            return this._queryIds[operationName] || null;
+        },
+
+        _extractQueryId(text, op) {
+            const ID = '([a-zA-Z0-9_-]{10,})';
+            const patterns = [
+                new RegExp('queryId:"' + ID + '",operationName:"' + op + '"'),
+                new RegExp('operationName:"' + op + '",queryId:"' + ID + '"'),
+                new RegExp('"' + op + '"[\\s\\S]{0,240}?queryId:"' + ID + '"'),
+                new RegExp('queryId:"' + ID + '"[\\s\\S]{0,240}?operationName:"' + op + '"')
+            ];
+            for (const re of patterns) { const m = text.match(re); if (m) return m[1]; }
+            return null;
         },
 
         sleep(ms) { return new Promise(r => setTimeout(r, ms)); },
@@ -460,9 +515,6 @@
      * ===================================================================== */
     const Dashboard = {
         firstShow: true,
-        // UserByScreenName GraphQL query id. X rotates these; if the profile fetch
-        // returns a non-200, copy the current id from the DevTools Network tab.
-        userQueryId: 'xc8f1g7BYqr6VTzTPvNlYg',
         _statsFetched: false,
         _statsFetching: false,
 
@@ -583,14 +635,21 @@
                     responsive_web_graphql_skip_user_profile_image_extensions_enabled: false,
                     responsive_web_graphql_timeline_navigation_enabled: true
                 });
-                const url = `${Core.baseUrl}/i/api/graphql/${this.userQueryId}/UserByScreenName?` + new URLSearchParams({ variables, features });
+                const queryId = await Core.resolveQueryId('UserByScreenName');
+                if (!queryId) {
+                    console.log('[TPM] Could not resolve the UserByScreenName query id from the page bundles. Open any X profile once and retry.');
+                    return;
+                }
+                const url = `${Core.baseUrl}/i/api/graphql/${queryId}/UserByScreenName?` + new URLSearchParams({ variables, features });
                 const res = await fetch(url, {
                     headers: Core.apiHeaders(), referrer: `${Core.baseUrl}/${screen_name}`,
                     referrerPolicy: 'strict-origin-when-cross-origin', method: 'GET', mode: 'cors',
                     credentials: 'include', signal: AbortSignal.timeout(8000)
                 });
                 if (res.status !== 200) {
-                    console.log(`[TPM] Profile fetch failed (HTTP ${res.status}). Update Dashboard.userQueryId from the Network tab if this persists.`);
+                    // A stale sniffed/cached id can 404; drop it so the next try re-resolves.
+                    if (res.status === 404) delete Core._queryIds['UserByScreenName'];
+                    console.log(`[TPM] Profile fetch failed (HTTP ${res.status}) for @${screen_name}.`);
                     return;
                 }
                 const result = (await res.json())?.data?.user?.result;
