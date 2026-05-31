@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Tweepcred Manager
 // @namespace    https://github.com/HyperboreanSlug/Tweepcred-Manager
-// @version      1.2.0
+// @version      1.2.1
 // @description  All-in-one toolkit for managing your X.com "tweepcred" reputation: estimate your score, fix your follower/following ratio (mass unfollow non-followers), and clean up old/low-engagement tweets, likes and DMs — all from one panel.
 // @author       HyperboreanSlug (merges TweetXer by Luca Hammer et al. + Mass Unfollow by Shayan Taherkhani)
 // @license      MIT
@@ -59,7 +59,7 @@
      *  CORE — shared state, auth and utilities used by every module          *
      * ===================================================================== */
     const Core = {
-        version: '1.2.0',
+        version: '1.2.1',
         baseUrl: `https://${window.location.hostname}`,
         // Public web bearer token (same one the X web app ships). Inherited from
         // TweetXer; required for the GraphQL delete/like endpoints.
@@ -90,14 +90,19 @@
             if (window.__tpmSniffer) return;
             window.__tpmSniffer = true;
             const self = this;
-            const origFetch = window.fetch;
+            // Bind to window so the native fetch keeps its required receiver. A
+            // bare fetch() call passes this=undefined under strict mode, and
+            // re-invoking the hardened global with that throws "Illegal
+            // invocation" in Chrome, which previously broke every API call
+            // (including deletion). Binding here makes the override transparent.
+            const origFetch = window.fetch.bind(window);
             window.fetch = function (input) {
                 try {
                     const u = typeof input === 'string' ? input : (input && input.url) || '';
                     const m = u.match(/\/i\/api\/graphql\/([^/]+)\/([^/?]+)/);
                     if (m) self._queryIds[m[2]] = m[1];
                 } catch (_) { }
-                return origFetch.apply(this, arguments);
+                return origFetch.apply(null, arguments);
             };
         },
 
