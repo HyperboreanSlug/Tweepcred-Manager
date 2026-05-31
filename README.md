@@ -71,11 +71,11 @@ You can also run it as a **userscript** with [Violentmonkey](https://violentmonk
 
 ### Dashboard
 
-Opens to an **estimated tweepcred score** with a factor-by-factor breakdown. It auto-fills your followers, following, account age, profile photo and bio from the page when it can; correct anything that's off and it recalculates live.
+Opens to a **tweepcred score** computed as an **exact reproduction of X's 2023 open-source maths** (`UserMass.scala` + `Reputation.scala`): the base device mass, the new-account deboost (only the first ~30 days matter), the verified/Premium override (mass = 100), the restricted penalty, and both follow-ratio penalties (the `>500` following with `>0.6` ratio rule, and the `>2500` following rule). The constants and operators are copied verbatim from the source; see `Dashboard.computeMass` in [the source](tweepcred-manager.js).
 
-It then gives **actionable recommendations**, such as "Unfollowing about 1,240 non-followers would bring you to roughly 1:1", with a one-click jump to the right tool.
+You can **look up any public handle** (or your own, auto-filled via the API), and it recalculates live as you edit. It then gives **actionable recommendations**, such as how many non-followers to unfollow to clear the ratio penalty, with a one-click jump to the Unfollow tool.
 
-The real tweepcred value is internal to X and not exposed, so this is a **transparent heuristic estimate**, not the actual number. The scoring weights are documented in [the source](tweepcred-manager.js) (`Dashboard.calculate`).
+> The one stage that **cannot** run in a browser is the global PageRank over the follow graph that consumes this mass. So the number shown is the per-user **mass/prior** that seeds tweepcred, computed exactly, not the PageRank output. Third-party calculators that fold in engagement and posting consistency are using signals that live in X's *ranking* model, not the open-source mass formula, so they are deliberately excluded here.
 
 ### Unfollow
 
