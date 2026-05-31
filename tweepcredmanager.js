@@ -506,7 +506,7 @@
                 </div>
                 <label class="tpm-label" for="tpm-d-age">Account age (days) — only the first ~30 days matter</label>
                 <input id="tpm-d-age" type="number" class="tpm-input" placeholder="e.g. 365">
-                <label class="tpm-check"><input type="checkbox" id="tpm-d-verified"> Verified / Premium (legacy: sets mass to 100)</label>
+                <label class="tpm-check"><input type="checkbox" id="tpm-d-verified"> Legacy verified (old blue check; sets mass to 100). X Premium does NOT count here.</label>
                 <label class="tpm-check"><input type="checkbox" id="tpm-d-device" checked> Valid device / verified phone (assumed; can't be read)</label>
                 <label class="tpm-check"><input type="checkbox" id="tpm-d-restricted"> Account restricted (×0.1 penalty)</label>
                 <div class="tpm-btns">
@@ -604,9 +604,9 @@
                     const days = Math.max(0, Math.round((Date.now() - new Date(lg.created_at).getTime()) / 86400000));
                     fill('tpm-d-age', days);
                 }
-                // Legacy "verified" OR current Premium blue check both count.
-                const verified = !!(lg.verified || result?.is_blue_verified || result?.isBlueVerified);
-                UI.el('tpm-d-verified').checked = verified;
+                // The 2023 mass formula's isVerified is LEGACY verification only
+                // (safety.verified), NOT X Premium / blue. Reproduce that exactly.
+                UI.el('tpm-d-verified').checked = !!lg.verified;
                 if (!force) this._statsFetched = true;
                 this.calculate();
             } catch (e) {
@@ -638,7 +638,7 @@
                 steps.push({ k: 'Suspended', v: 'mass = 0' });
             } else if (verified) {
                 mass = 100;
-                steps.push({ k: 'Verified / Premium', v: 'mass = 100' });
+                steps.push({ k: 'Legacy verified', v: 'mass = 100' });
             } else {
                 let score = deviceWeightAdditive * 0.1 + (validDevice ? deviceWeightAdditive : 0);
                 steps.push({ k: 'Base (device)', v: `${(score * 100).toFixed(0)} / 100` });
@@ -728,10 +728,10 @@
             }
 
             if (!verified) {
-                recs.push('In the legacy formula a verified / Premium account has its mass set to <strong>100</strong> outright — the single biggest lever in this model.');
+                recs.push('In the legacy formula a <strong>legacy-verified</strong> account (the old manually-granted blue check) has its mass set to <strong>100</strong> outright, the single biggest lever in this model. Note: X Premium / blue is a different flag and did not feed this formula.');
             }
             if (!validDevice) {
-                recs.push('Verify a phone / use a valid device — without one the base mass drops from 55 to 5 before any other factor.');
+                recs.push('Verify a phone / use a valid device. Without one the base mass drops from 55 to 5 before any other factor.');
             }
 
             // Honest note on what tweethunter adds that the source does NOT.
