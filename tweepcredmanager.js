@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Tweepcred Manager
 // @namespace    https://github.com/HyperboreanSlug/Tweepcred-Manager
-// @version      1.1.1
+// @version      1.2.0
 // @description  All-in-one toolkit for managing your X.com "tweepcred" reputation: estimate your score, fix your follower/following ratio (mass unfollow non-followers), and clean up old/low-engagement tweets, likes and DMs — all from one panel.
 // @author       HyperboreanSlug (merges TweetXer by Luca Hammer et al. + Mass Unfollow by Shayan Taherkhani)
 // @license      MIT
@@ -59,7 +59,7 @@
      *  CORE — shared state, auth and utilities used by every module          *
      * ===================================================================== */
     const Core = {
-        version: '1.1.1',
+        version: '1.2.0',
         baseUrl: `https://${window.location.hostname}`,
         // Public web bearer token (same one the X web app ships). Inherited from
         // TweetXer; required for the GraphQL delete/like endpoints.
@@ -1169,6 +1169,14 @@
                 </label>
                 <input type="file" id="tpm-file">
                 <p id="tpm-clean-info" style="margin-top:12px"></p>
+                <div id="tpm-clean-preview" style="display:none">
+                  <div class="tpm-warn-box" id="tpm-clean-summary"></div>
+                  <label class="tpm-check"><input type="checkbox" id="tpm-clean-confirm"> I understand this permanently deletes the items above. This cannot be undone.</label>
+                  <div class="tpm-btns">
+                    <button class="tpm-btn tpm-btn-ghost" id="tpm-clean-cancel" type="button">Cancel</button>
+                    <button class="tpm-btn tpm-btn-danger" id="tpm-clean-start" type="button" disabled>Start deleting</button>
+                  </div>
+                </div>
                 <div id="tpm-clean-progress"></div>
               </div>
 
@@ -1203,6 +1211,14 @@
             UI.el('tpm-file').addEventListener('change', () => this.processFile(), false);
             UI.el('tpm-exportBookmarks').onclick = () => this.exportBookmarks();
             UI.el('tpm-slowDelete').onclick = () => this.slowDelete();
+
+            // Start/cancel for the previewed deletion run. The Start button stays
+            // disabled until the user ticks the irreversible-action confirmation.
+            UI.el('tpm-clean-confirm').addEventListener('change', (e) => {
+                UI.el('tpm-clean-start').disabled = !e.target.checked;
+            });
+            UI.el('tpm-clean-start').onclick = () => this.startRun();
+            UI.el('tpm-clean-cancel').onclick = () => this.cancelRun();
 
             // drag & drop
             const drop = UI.el('tpm-drop'), fileInput = UI.el('tpm-file');
@@ -1387,40 +1403,78 @@
                     self.info('File content not recognized. Use a file from the Twitter data export.');
                 }
 
-                if (self.action.length > 0) {
-                    self.readSettings();
-                    self.total = self.tIds.length;
-                    self.createProgressBar();
-                }
+                if (!self.action) return;   // unrecognized file; nothing to preview
 
-                if (self.action === 'untweet') {
-                    self.ensureTweetCount().then(() => {
-                        const skipVal = UI.el('tpm-skipCount').value;
-                        if (skipVal.length < 1) {
-                            self.skip = Math.max(0, self.total - self.TweetCount - parseInt(self.total / 20));
-                        } else self.skip = parseInt(skipVal, 10);
-                        console.log(`Skipping oldest ${self.skip} Tweets.`);
-                        self.tIds.reverse();
+                // Parse only. Build a run closure but DON'T delete yet — wait for the
+                // explicit Start button so an irreversible action is never automatic.
+                self.readSettings();
+                self.total = self.tIds.length;
+
+                const labels = { untweet: 'tweets', unfav: 'likes', undm: 'DM conversations' };
+                self._pendingRun = () => {
+                    self.createProgressBar();
+                    if (self.action === 'untweet') {
+                        self.ensureTweetCount().then(() => {
+                            const skipVal = UI.el('tpm-skipCount').value;
+                            if (skipVal.length < 1) {
+                                self.skip = Math.max(0, self.total - self.TweetCount - parseInt(self.total / 20));
+                            } else self.skip = parseInt(skipVal, 10);
+                            console.log(`Skipping oldest ${self.skip} Tweets.`);
+                            self.tIds.reverse();
+                            self.tIds = self.tIds.slice(self.skip);
+                            self.dCount = self.skip;
+                            self.tIds.reverse();
+                            self.deleteTweets();
+                        });
+                    } else if (self.action === 'unfav') {
+                        self.skip = UI.el('tpm-skipCount').value.length > 0 ? parseInt(UI.el('tpm-skipCount').value, 10) : 0;
                         self.tIds = self.tIds.slice(self.skip);
                         self.dCount = self.skip;
                         self.tIds.reverse();
-                        self.deleteTweets();
-                    });
-                } else if (self.action === 'unfav') {
-                    self.skip = UI.el('tpm-skipCount').value.length > 0 ? parseInt(UI.el('tpm-skipCount').value, 10) : 0;
-                    self.tIds = self.tIds.slice(self.skip);
-                    self.dCount = self.skip;
-                    self.tIds.reverse();
-                    self.deleteFavs();
-                } else if (self.action === 'undm') {
-                    self.skip = UI.el('tpm-skipCount').value.length > 0 ? parseInt(UI.el('tpm-skipCount').value, 10) : 0;
-                    self.tIds = self.tIds.slice(self.skip);
-                    self.dCount = self.skip;
-                    self.tIds.reverse();
-                    if (self.deleteDMsOneByOne) self.deleteDMs(); else self.deleteConvos();
-                }
+                        self.deleteFavs();
+                    } else if (self.action === 'undm') {
+                        self.skip = UI.el('tpm-skipCount').value.length > 0 ? parseInt(UI.el('tpm-skipCount').value, 10) : 0;
+                        self.tIds = self.tIds.slice(self.skip);
+                        self.dCount = self.skip;
+                        self.tIds.reverse();
+                        if (self.deleteDMsOneByOne) self.deleteDMs(); else self.deleteConvos();
+                    }
+                };
+
+                self.showPreview(`Loaded <strong>${self.total.toLocaleString()}</strong> ${labels[self.action] || 'items'} from this file. Review the filters below, then start.`);
             };
             fr.readAsText(tn.files[0]);
+        },
+
+        // Reveal the confirm + Start controls after a file is parsed.
+        showPreview(summaryHtml) {
+            const box = UI.el('tpm-clean-summary'); if (box) box.innerHTML = summaryHtml;
+            const wrap = UI.el('tpm-clean-preview'); if (wrap) wrap.style.display = '';
+            const cb = UI.el('tpm-clean-confirm'); if (cb) cb.checked = false;
+            const start = UI.el('tpm-clean-start'); if (start) start.disabled = true;
+        },
+
+        hidePreview() {
+            const wrap = UI.el('tpm-clean-preview'); if (wrap) wrap.style.display = 'none';
+        },
+
+        // Fired by the Start button: run the stashed deletion.
+        startRun() {
+            if (!this._pendingRun) return;
+            const run = this._pendingRun;
+            this._pendingRun = null;
+            this.hidePreview();
+            run();
+        },
+
+        // Discard a parsed-but-not-started run and reset the file picker.
+        cancelRun() {
+            this._pendingRun = null;
+            this.action = '';
+            this.tIds = [];
+            this.hidePreview();
+            const fi = UI.el('tpm-file'); if (fi) fi.value = '';
+            this.info('Cancelled. Drop a file to start over.');
         },
 
         // Lazily detect the profile tweet count (used to auto-skip already-deleted
@@ -1582,6 +1636,8 @@
         },
 
         async slowDelete() {
+            // Irreversible: require an explicit confirm before touching the profile.
+            if (!window.confirm('Slow delete will permanently delete tweets straight from your profile. This cannot be undone. Continue?')) return;
             this.readSettings();
             const drop = UI.el('tpm-drop'); if (drop) drop.style.display = 'none';
             await this.ensureTweetCount();
