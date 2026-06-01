@@ -87,9 +87,10 @@ Repairs your ratio by unfollowing accounts that don't follow you back.
 
 Features:
 
-- **Skips mutuals** - people who follow you back are never unfollowed.
+- **Skips mutuals** - people who follow you back are never unfollowed (toggle).
 - **Skips private/locked accounts** (toggle).
 - **Whitelist** - @handles to never unfollow, saved in your browser.
+- **Keyword profile filter** - scans each followed account's profile (display name, bio, location, link) for terms you supply, then either **protects** matches (never unfollow them) or **targets** them (only act on matches). Built for research groups studying the prevalence of hate speech and other content on the platform. Case-insensitive, supports `*` wildcards, optional deep scan reads the full bio via the API. Run the audit first to preview the matched set.
 - **Continuous mode** - batches of 190 with a 15-20 min cooldown between each, matching the rate-limit window. The only recommended way to clear large lists.
 - **Pause / Resume / Stop**, live stats, and a full session log in the console.
 
@@ -100,7 +101,7 @@ Features:
 Deletes the low-value content that pulls your engagement average down.
 
 - **From your data export** (recommended): [request your data](https://x.com/settings/your_twitter_data/data), unzip it, then drag a file onto the dropzone. Reaches old tweets that no longer appear on your profile.
-- **Slow delete without a file**: deletes straight from your profile UI. No export needed, but only reaches currently visible tweets.
+- **Slow delete without a file**: deletes straight from your profile UI (~4,000/hour). No export needed, but only reaches currently visible tweets.
 
 Both modes auto-pause at 190 actions by default to match the rate window. **Do not disable auto-pause entirely.**
 

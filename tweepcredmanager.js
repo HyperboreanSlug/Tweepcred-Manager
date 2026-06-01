@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Tweepcred Manager
 // @namespace    https://github.com/HyperboreanSlug/Tweepcred-Manager
-// @version      1.2.1
+// @version      1.3.0
 // @description  All-in-one toolkit for managing your X.com "tweepcred" reputation: estimate your score, fix your follower/following ratio (mass unfollow non-followers), and clean up old/low-engagement tweets, likes and DMs — all from one panel.
 // @author       HyperboreanSlug (merges TweetXer by Luca Hammer et al. + Mass Unfollow by Shayan Taherkhani)
 // @license      MIT
@@ -59,7 +59,7 @@
      *  CORE — shared state, auth and utilities used by every module          *
      * ===================================================================== */
     const Core = {
-        version: '1.2.1',
+        version: '1.3.0',
         baseUrl: `https://${window.location.hostname}`,
         // Public web bearer token (same one the X web app ships). Inherited from
         // TweetXer; required for the GraphQL delete/like endpoints.
@@ -184,6 +184,47 @@
                 'x-twitter-active-user': 'yes',
                 'x-twitter-auth-type': 'OAuth2Session'
             };
+        },
+
+        // Fetch a user's profile via UserByScreenName and return the searchable
+        // text fields (name, bio, location, url). Cached per handle. Returns null
+        // on failure so callers can fall back to the visible cell text.
+        _profileCache: {},
+        async getProfileText(screenName) {
+            const key = (screenName || '').toLowerCase();
+            if (!key) return null;
+            if (this._profileCache[key] !== undefined) return this._profileCache[key];
+            try {
+                const queryId = await this.resolveQueryId('UserByScreenName');
+                if (!queryId) { this._profileCache[key] = null; return null; }
+                const variables = JSON.stringify({ screen_name: screenName, withSafetyModeUserFields: true });
+                const features = JSON.stringify({
+                    hidden_profile_subscriptions_enabled: true, rweb_tipjar_consumption_enabled: true,
+                    responsive_web_graphql_exclude_directive_enabled: true, verified_phone_label_enabled: false,
+                    subscriptions_verification_info_is_identity_verified_enabled: true,
+                    subscriptions_verification_info_verified_since_enabled: true, highlights_tweets_tab_ui_enabled: true,
+                    responsive_web_twitter_article_notes_tab_enabled: true, subscriptions_feature_can_gift_premium: true,
+                    creator_subscriptions_tweet_preview_api_enabled: true,
+                    responsive_web_graphql_skip_user_profile_image_extensions_enabled: false,
+                    responsive_web_graphql_timeline_navigation_enabled: true
+                });
+                const url = `${this.baseUrl}/i/api/graphql/${queryId}/UserByScreenName?` + new URLSearchParams({ variables, features });
+                const res = await fetch(url, {
+                    headers: this.apiHeaders(), referrer: `${this.baseUrl}/${screenName}`,
+                    referrerPolicy: 'strict-origin-when-cross-origin', method: 'GET', mode: 'cors',
+                    credentials: 'include', signal: AbortSignal.timeout(8000)
+                });
+                if (res.status !== 200) { this._profileCache[key] = null; return null; }
+                const lg = (await res.json())?.data?.user?.result?.legacy;
+                if (!lg) { this._profileCache[key] = null; return null; }
+                const urls = (lg.entities?.url?.urls || []).map(u => u.expanded_url || u.url).join(' ');
+                const text = [lg.name, lg.description, lg.location, urls].filter(Boolean).join(' \n ');
+                this._profileCache[key] = text;
+                return text;
+            } catch (_) {
+                this._profileCache[key] = null;
+                return null;
+            }
         },
 
         // Convert a Snowflake id (tweet OR post-2013 user id) to a Date.
@@ -458,6 +499,8 @@
             ${p} .tpm-label:first-child{margin-top:0}
             ${p} .tpm-input{width:100%;padding:9px 12px;border-radius:10px;border:1px solid var(--border);background:rgba(0,0,0,.25);color:var(--text);font-size:14px;font-family:inherit;outline:none;transition:.15s}
             ${p} textarea.tpm-input{resize:vertical;min-height:64px}
+            ${p} select.tpm-input{appearance:none;-webkit-appearance:none;cursor:pointer}
+            ${p} select.tpm-input option{background:#15181c;color:var(--text)}
             ${p} .tpm-input:focus{border-color:var(--acc);box-shadow:0 0 0 3px rgba(29,155,240,.25)}
             ${p} .tpm-row{display:flex;gap:10px}
             ${p} .tpm-row>div{flex:1}
@@ -859,6 +902,21 @@
                 <textarea id="tpm-unf-white" class="tpm-input" placeholder="@friend&#10;@favbrand">${Core.escapeHtml((s.get('unf.white', []) || []).map(u => '@' + u).join('\n'))}</textarea>
               </div>
 
+              <div class="tpm-section">
+                <h4>Keyword profile filter</h4>
+                <p>Scans each followed account's profile (display name, bio, location, link) for your terms. Built for research groups studying the prevalence of hate speech and other content on the platform. Matching is case-insensitive; comma- or newline-separated; <code>*</code> wildcards allowed.</p>
+                <label class="tpm-label" for="tpm-unf-kw">Terms to match</label>
+                <textarea id="tpm-unf-kw" class="tpm-input" placeholder="term one, term two">${Core.escapeHtml(s.get('unf.kw', '') || '')}</textarea>
+                <label class="tpm-label" for="tpm-unf-kw-action">When a profile matches</label>
+                <select id="tpm-unf-kw-action" class="tpm-input">
+                  <option value="off">Do nothing (filter off)</option>
+                  <option value="protect">Protect — never unfollow matching accounts</option>
+                  <option value="target">Target — only act on matching accounts</option>
+                </select>
+                <label class="tpm-check"><input type="checkbox" id="tpm-unf-kw-deep" ${s.get('unf.kwDeep', true) ? 'checked' : ''}> Deep scan via API (reads the full bio, not just the visible row). One request per account; counts toward rate limits.</label>
+                <p class="tpm-note" id="tpm-unf-kw-note"></p>
+              </div>
+
               <div class="tpm-btns">
                 <button class="tpm-btn tpm-btn-ghost" id="tpm-unf-audit" type="button">Scan only (audit)</button>
                 <button class="tpm-btn tpm-btn-primary" id="tpm-unf-start" type="button">Start unfollowing</button>
@@ -873,6 +931,19 @@
             UI.el('tpm-unf-cont').addEventListener('change', (e) => {
                 UI.el('tpm-unf-cooldownrow').style.display = e.target.checked ? '' : 'none';
             });
+            // Restore saved keyword action and keep a plain-language note in sync.
+            const kwAction = UI.el('tpm-unf-kw-action');
+            kwAction.value = s.get('unf.kwAction', 'off');
+            const kwNote = () => {
+                const map = {
+                    off: 'Filter is off. The keyword field is ignored.',
+                    protect: 'Accounts whose profile matches will be SKIPPED (kept). Use this to preserve a study cohort while you trim everyone else.',
+                    target: 'ONLY accounts whose profile matches will be unfollowed. Non-matching accounts are skipped. Use the audit to preview the matched set before acting.'
+                };
+                UI.el('tpm-unf-kw-note').textContent = map[kwAction.value] || '';
+            };
+            kwAction.addEventListener('change', kwNote);
+            kwNote();
             UI.el('tpm-unf-audit').onclick = () => this.audit();
             UI.el('tpm-unf-start').onclick = () => this.start();
             UI.el('tpm-unf-pause').onclick = () => this.togglePause();
@@ -901,10 +972,39 @@
             this.whitelist = new Set(
                 (UI.el('tpm-unf-white').value.match(/[A-Za-z0-9_]+/g) || []).map(u => u.toLowerCase())
             );
+
+            // Keyword profile filter
+            const kwRaw = UI.el('tpm-unf-kw').value || '';
+            this.kwAction = UI.el('tpm-unf-kw-action').value;        // off | protect | target
+            this.kwDeep = UI.el('tpm-unf-kw-deep').checked;
+            this.kwTerms = kwRaw.split(/[\n,]+/).map(t => t.trim().toLowerCase()).filter(Boolean);
+            // Each term -> a RegExp; '*' becomes a wildcard, everything else escaped.
+            this.kwRegexes = this.kwTerms.map(t => {
+                const esc = t.replace(/[.+?^${}()|[\]\\]/g, '\\$&').replace(/\*/g, '.*');
+                return new RegExp(esc, 'i');
+            });
+            if (this.kwAction !== 'off' && this.kwTerms.length === 0) this.kwAction = 'off';
+
             const s = Core.store;
             s.set('unf.max', this.MAX); s.set('unf.mind', this.MIN_DELAY / 1000); s.set('unf.maxd', this.MAX_DELAY / 1000);
             s.set('unf.cont', this.continuous); s.set('unf.cmin', this.PAUSE_MIN / 60000); s.set('unf.cmax', this.PAUSE_MAX / 60000);
             s.set('unf.private', this.skipPrivate); s.set('unf.mutuals', this.preserveMutuals); s.set('unf.white', [...this.whitelist]);
+            s.set('unf.kw', kwRaw); s.set('unf.kwAction', UI.el('tpm-unf-kw-action').value); s.set('unf.kwDeep', this.kwDeep);
+        },
+
+        // Does this account's profile match any keyword term? Reads the visible
+        // cell text first (free); if deep scan is on, also fetches the full bio.
+        // Returns true/false, or null if it genuinely couldn't be determined.
+        async keywordMatches(cell, username) {
+            if (!this.kwRegexes || !this.kwRegexes.length) return false;
+            const visible = (cell?.innerText || '') + ' ' + (cell?.textContent || '');
+            if (this.kwRegexes.some(re => re.test(visible))) return true;
+            if (this.kwDeep) {
+                const text = await Core.getProfileText(username);
+                if (text == null) return null;   // fetch failed; let caller decide
+                if (this.kwRegexes.some(re => re.test(text))) return true;
+            }
+            return false;
         },
 
         setStatus(kind, text) {
@@ -944,8 +1044,10 @@
             UI.el('tpm-unf-live').style.display = 'flex';
             this.setStatus('run', '🔍 Auditing (no unfollows)…');
 
+            const kwOn = this.kwAction && this.kwAction !== 'off';
             const seen = new Set();
-            let mutuals = 0, nonFollowers = 0, privates = 0, whitelisted = 0, empty = 0;
+            const kwMatches = [];
+            let mutuals = 0, nonFollowers = 0, privates = 0, whitelisted = 0, kwMatched = 0, empty = 0;
             while (!this.stop && empty < 8) {
                 await this.waitWhilePaused();
                 const cells = Array.from(document.querySelectorAll('[data-testid="UserCell"], [data-testid="cellInnerDiv"]'));
@@ -961,8 +1063,14 @@
                     else if (Follow.isMutual(uc)) mutuals++;
                     else if (Follow.isPrivate(uc)) privates++;
                     else nonFollowers++;
-                    this.setStats(nonFollowers, mutuals + privates + whitelisted, '—');
-                    this.setNow(`Scanned <strong>${seen.size}</strong> accounts…`);
+                    // Tally keyword matches when the filter is configured.
+                    if (kwOn) {
+                        uc.scrollIntoView({ block: 'center', behavior: 'instant' });
+                        const m = await this.keywordMatches(uc, u);
+                        if (m === true) { kwMatched++; kwMatches.push(u); console.log(`%c[audit] keyword match: @${u}`, 'color:#f4212e'); }
+                    }
+                    this.setStats(nonFollowers, mutuals + privates + whitelisted, kwOn ? kwMatched : '—');
+                    this.setNow(`Scanned <strong>${seen.size}</strong>${kwOn ? ` · <strong>${kwMatched}</strong> keyword matches` : ''}…`);
                 }
                 if (!found) {
                     empty++;
@@ -974,8 +1082,10 @@
             }
 
             this.setStatus('idle', '✅ Audit complete');
-            this.setNow(`<strong>${seen.size}</strong> scanned · <strong>${nonFollowers}</strong> non-followers (unfollowable) · ${mutuals} mutuals · ${privates} private · ${whitelisted} whitelisted`);
-            console.table({ scanned: seen.size, nonFollowers, mutuals, privates, whitelisted });
+            const kwLine = kwOn ? ` · <strong>${kwMatched}</strong> keyword matches` : '';
+            this.setNow(`<strong>${seen.size}</strong> scanned · <strong>${nonFollowers}</strong> non-followers · ${mutuals} mutuals · ${privates} private · ${whitelisted} whitelisted${kwLine}`);
+            console.table({ scanned: seen.size, nonFollowers, mutuals, privates, whitelisted, keywordMatches: kwMatched });
+            if (kwOn) console.log('Keyword-matched accounts:', kwMatches);
             this.finishUI();
         },
 
@@ -1058,6 +1168,24 @@
                 if (this.skipPrivate && Follow.isPrivate(cell)) {
                     this.logAction(username, 'skipped', 'Private/locked'); skipped++;
                     this.setStats(total, skipped, this.MAX - batchCount); continue;
+                }
+
+                // Keyword profile filter: protect (skip matches) or target (skip non-matches).
+                if (this.kwAction && this.kwAction !== 'off') {
+                    this.setNow(`Scanning @${Core.escapeHtml(username)}'s profile…`);
+                    const matched = await this.keywordMatches(cell, username);
+                    if (matched === null) {
+                        this.logAction(username, 'skipped', 'Keyword scan failed (profile unavailable)'); skipped++;
+                        this.setStats(total, skipped, this.MAX - batchCount); continue;
+                    }
+                    if (this.kwAction === 'protect' && matched) {
+                        this.logAction(username, 'skipped', 'Keyword match — protected'); skipped++;
+                        this.setStats(total, skipped, this.MAX - batchCount); continue;
+                    }
+                    if (this.kwAction === 'target' && !matched) {
+                        this.logAction(username, 'skipped', 'No keyword match (target mode)'); skipped++;
+                        this.setStats(total, skipped, this.MAX - batchCount); continue;
+                    }
                 }
 
                 const btn = Follow.findUnfollowButton(cell);
@@ -1153,10 +1281,8 @@
         deleteDMsOneByOne: false,
         bookmarks: [],
         bookmarksNext: '',
+        _fails: 0,
         tweetResultQueryId: '7xflPyRiUxGVbJd4uWmbKg',
-        deleteURL: '/i/api/graphql/VaenaVgh5q5ih7kvyVjgtg/DeleteTweet',
-        unfavURL: '/i/api/graphql/ZYKSe-w7KEslx3JhSIk5LA/UnfavoriteTweet',
-        deleteMessageURL: '/i/api/graphql/BJ6DtxA2llfjnRoRjaiIiw/DMMessageDeleteMutation',
         deleteConvoURL: '/i/api/1.1/dm/conversation/USER_ID-CONVERSATION_ID/delete.json',
         bookmarksURL: '/i/api/graphql/L7vvM2UluPgWOW4GDvWyvw/Bookmarks?',
 
@@ -1250,6 +1376,7 @@
             const drop = UI.el('tpm-drop'); if (drop) drop.style.display = 'none';
             this.startTime = Date.now();
             this.startCount = this.dCount;
+            this._fails = 0;
             const area = UI.el('tpm-clean-progress');
             area.innerHTML = `
               <div style="display:flex;justify-content:space-between;align-items:baseline;margin:6px 0">
@@ -1503,16 +1630,47 @@
             }
         },
 
+        // Resolve a GraphQL endpoint URL using the LIVE query id when we can find
+        // it (X rotates these; a stale id makes the API return 200 with an error
+        // body and silently delete nothing). Falls back to the known-good id.
+        async graphqlUrl(opName, fallbackId) {
+            const id = (await Core.resolveQueryId(opName)) || fallbackId;
+            return `${Core.baseUrl}/i/api/graphql/${id}/${opName}`;
+        },
+
         async sendRequest(url, body = `{"variables":{"tweet_id":"${this.tId}","dark_request":false},"queryId":"${url.split('/')[6]}"}`) {
             return new Promise(async (resolve) => {
                 try {
                     const response = await fetch(url, {
                         headers: Core.apiHeaders(), referrer: `${Core.baseUrl}/${Core.username}/with_replies`,
                         referrerPolicy: 'strict-origin-when-cross-origin', body, method: 'POST', mode: 'cors',
-                        credentials: 'include', signal: AbortSignal.timeout(5000)
+                        credentials: 'include', signal: AbortSignal.timeout(8000)
                     });
                     if (response.status === 200) {
-                        this.dCount++; this.updateProgressBar(); await this.maybePause();
+                        // GraphQL returns HTTP 200 even when the mutation FAILS. Inspect
+                        // the body so a failed delete is never counted as a success — the
+                        // exact bug where the bar advanced but nothing was deleted.
+                        let payload = null;
+                        try { payload = await response.clone().json(); } catch (_) { }
+                        if (payload && Array.isArray(payload.errors) && payload.errors.length) {
+                            const msg = payload.errors[0]?.message || 'unknown GraphQL error';
+                            this._fails = (this._fails || 0) + 1;
+                            console.warn(`[TPM] Delete FAILED for ${this.tId}: ${msg}`, payload.errors);
+                            this.info(`Delete failed: ${msg} (${this.dCount} done).`);
+                            // Everything failing with nothing deleted => stale query id or
+                            // auth/CSRF. Stop instead of grinding through the whole list.
+                            if (this._fails >= 8 && this.dCount === this.startCount) {
+                                this.tIds = [];
+                                this.info(`Stopped: ${this._fails} failures, 0 deletions. "${msg}". The delete query id or your login/CSRF token is likely stale — reload X and rerun.`);
+                                console.error('[TPM] Aborting: repeated GraphQL failures, nothing deleted.');
+                            }
+                            resolve('error');
+                            return;
+                        }
+                        this._fails = 0;
+                        this.dCount++;
+                        if (this.dCount <= 3 || this.dCount % 50 === 0) console.log(`[TPM] Deleted ${this.dCount} (last id ${this.tId}).`);
+                        this.updateProgressBar(); await this.maybePause();
                         if (response.headers.get('x-rate-limit-remaining') != null && response.headers.get('x-rate-limit-remaining') < 1) {
                             this.ratelimitreset = response.headers.get('x-rate-limit-reset');
                             let s = this.ratelimitreset - Math.floor(Date.now() / 1000);
@@ -1520,12 +1678,26 @@
                             resolve('deleted and waiting');
                         } else resolve('deleted');
                     } else if (response.status === 429) {
-                        this.tIds.push(this.tId); await Core.sleep(1000);
-                    } else { console.log(response); resolve('error'); }
+                        // Push the id back and let the loop retry it next pass.
+                        this.tIds.push(this.tId); await Core.sleep(1000); resolve('ratelimited');
+                    } else {
+                        let detail = '';
+                        try { detail = (await response.clone().text()).slice(0, 200); } catch (_) { }
+                        this._fails = (this._fails || 0) + 1;
+                        console.warn(`[TPM] Delete HTTP ${response.status} for ${this.tId}. ${detail}`);
+                        this.info(`Delete failed (HTTP ${response.status}). ${this.dCount} done.`);
+                        if (this._fails >= 8 && this.dCount === this.startCount) {
+                            this.tIds = [];
+                            this.info(`Stopped: repeated HTTP ${response.status}. Reload X / re-log in and retry.`);
+                        }
+                        resolve('error');
+                    }
                 } catch (error) {
                     if (error.name === 'AbortError' || error.Name === 'AbortError') {
                         this.tIds.push(this.tId);
                         let s = 15; while (s > 0) { s--; this.info(`Timeout. Waiting ${s}s. ${this.dCount} deleted.`); await Core.sleep(1000); }
+                    } else {
+                        console.warn('[TPM] Delete request threw:', error);
                     }
                     resolve('error');
                 }
@@ -1533,6 +1705,8 @@
         },
 
         async deleteTweets() {
+            const url = await this.graphqlUrl('DeleteTweet', 'VaenaVgh5q5ih7kvyVjgtg');
+            console.log(`[TPM] Deleting ${this.tIds.length} tweets via ${url.split('/').slice(5).join('/')}`);
             while (this.tIds.length > 0) {
                 this.tId = this.tIds.pop();
                 if (this.liveLikes && this.spareThreshold > 0) {
@@ -1542,21 +1716,23 @@
                         console.log(`Spared ${this.tId} (${likes} likes).`); this.updateProgressBar(); continue;
                     }
                 }
-                await this.sendRequest(Core.baseUrl + this.deleteURL);
+                await this.sendRequest(url);
             }
             this.tId = ''; this.updateProgressBar();
             this.info(`Done. Deleted ${this.dCount.toLocaleString()} tweets.`);
         },
 
         async deleteFavs() {
-            while (this.tIds.length > 0) { this.tId = this.tIds.pop(); await this.sendRequest(Core.baseUrl + this.unfavURL); }
+            const url = await this.graphqlUrl('UnfavoriteTweet', 'ZYKSe-w7KEslx3JhSIk5LA');
+            while (this.tIds.length > 0) { this.tId = this.tIds.pop(); await this.sendRequest(url); }
             this.tId = ''; this.updateProgressBar(); this.info(`Done. Removed ${this.dCount.toLocaleString()} likes.`);
         },
 
         async deleteDMs() {
+            const url = await this.graphqlUrl('DMMessageDeleteMutation', 'BJ6DtxA2llfjnRoRjaiIiw');
             while (this.tIds.length > 0) {
                 this.tId = this.tIds.pop();
-                await this.sendRequest(Core.baseUrl + this.deleteMessageURL, `{"variables":{"messageId":"${this.tId}"},"requestId":""}`);
+                await this.sendRequest(url, `{"variables":{"messageId":"${this.tId}"},"requestId":""}`);
             }
             this.tId = ''; this.updateProgressBar();
         },
