@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Tweepcred Manager
 // @namespace    https://github.com/HyperboreanSlug/Tweepcred-Manager
-// @version      1.3.0
+// @version      1.4.0
 // @description  All-in-one toolkit for managing your X.com "tweepcred" reputation: estimate your score, fix your follower/following ratio (mass unfollow non-followers), and clean up old/low-engagement tweets, likes and DMs — all from one panel.
 // @author       HyperboreanSlug (merges TweetXer by Luca Hammer et al. + Mass Unfollow by Shayan Taherkhani)
 // @license      MIT
@@ -59,7 +59,7 @@
      *  CORE — shared state, auth and utilities used by every module          *
      * ===================================================================== */
     const Core = {
-        version: '1.3.0',
+        version: '1.4.0',
         baseUrl: `https://${window.location.hostname}`,
         // Public web bearer token (same one the X web app ships). Inherited from
         // TweetXer; required for the GraphQL delete/like endpoints.
@@ -186,43 +186,78 @@
             };
         },
 
-        // Fetch a user's profile via UserByScreenName and return the searchable
-        // text fields (name, bio, location, url). Cached per handle. Returns null
-        // on failure so callers can fall back to the visible cell text.
-        _profileCache: {},
-        async getProfileText(screenName) {
-            const key = (screenName || '').toLowerCase();
-            if (!key) return null;
-            if (this._profileCache[key] !== undefined) return this._profileCache[key];
+        // Search X for whether `screenName` has ever posted any of `terms`, using
+        // the SearchTimeline GraphQL endpoint with a `from:user "term"` query.
+        // Returns { matched: bool, term: string|null } or null on failure.
+        // Cached per (user + terms) so re-runs and audit+start don't re-query.
+        _searchCache: {},
+        async userPostedTerm(screenName, terms) {
+            const user = (screenName || '').toLowerCase();
+            if (!user || !terms || !terms.length) return { matched: false, term: null };
+            const cacheKey = user + '|' + terms.join(',').toLowerCase();
+            if (this._searchCache[cacheKey] !== undefined) return this._searchCache[cacheKey];
+
+            const queryId = await this.resolveQueryId('SearchTimeline');
+            if (!queryId) { return null; }   // don't cache a transient resolve failure
+
+            // Phrase-quote each term so the search matches the exact words, and OR
+            // them so one request covers every term for this account.
+            const ors = terms.map(t => `"${t.replace(/"/g, '')}"`).join(' OR ');
+            const rawQuery = `from:${screenName} (${ors})`;
+
+            const variables = JSON.stringify({
+                rawQuery, count: 20, querySource: 'typed_query', product: 'Latest'
+            });
+            const features = JSON.stringify({
+                rweb_tipjar_consumption_enabled: true, responsive_web_graphql_exclude_directive_enabled: true,
+                verified_phone_label_enabled: false, creator_subscriptions_tweet_preview_api_enabled: true,
+                responsive_web_graphql_timeline_navigation_enabled: true,
+                responsive_web_graphql_skip_user_profile_image_extensions_enabled: false,
+                communities_web_enable_tweet_community_results_fetch: true,
+                c9s_tweet_anatomy_moderator_badge_enabled: true, articles_preview_enabled: true,
+                responsive_web_edit_tweet_api_enabled: true, graphql_is_translatable_rweb_tweet_is_translatable_enabled: true,
+                view_counts_everywhere_api_enabled: true, longform_notetweets_consumption_enabled: true,
+                responsive_web_twitter_article_tweet_consumption_enabled: true, tweet_awards_web_tipping_enabled: false,
+                freedom_of_speech_not_reach_fetch_enabled: true, standardized_nudges_misinfo: true,
+                tweet_with_visibility_results_prefer_gql_limited_actions_policy_enabled: true,
+                rweb_video_timestamps_enabled: true, longform_notetweets_rich_text_read_enabled: true,
+                longform_notetweets_inline_media_enabled: true, responsive_web_enhance_cards_enabled: false
+            });
+            const url = `${this.baseUrl}/i/api/graphql/${queryId}/SearchTimeline?` + new URLSearchParams({ variables, features });
             try {
-                const queryId = await this.resolveQueryId('UserByScreenName');
-                if (!queryId) { this._profileCache[key] = null; return null; }
-                const variables = JSON.stringify({ screen_name: screenName, withSafetyModeUserFields: true });
-                const features = JSON.stringify({
-                    hidden_profile_subscriptions_enabled: true, rweb_tipjar_consumption_enabled: true,
-                    responsive_web_graphql_exclude_directive_enabled: true, verified_phone_label_enabled: false,
-                    subscriptions_verification_info_is_identity_verified_enabled: true,
-                    subscriptions_verification_info_verified_since_enabled: true, highlights_tweets_tab_ui_enabled: true,
-                    responsive_web_twitter_article_notes_tab_enabled: true, subscriptions_feature_can_gift_premium: true,
-                    creator_subscriptions_tweet_preview_api_enabled: true,
-                    responsive_web_graphql_skip_user_profile_image_extensions_enabled: false,
-                    responsive_web_graphql_timeline_navigation_enabled: true
-                });
-                const url = `${this.baseUrl}/i/api/graphql/${queryId}/UserByScreenName?` + new URLSearchParams({ variables, features });
                 const res = await fetch(url, {
-                    headers: this.apiHeaders(), referrer: `${this.baseUrl}/${screenName}`,
+                    headers: this.apiHeaders(), referrer: `${this.baseUrl}/search`,
                     referrerPolicy: 'strict-origin-when-cross-origin', method: 'GET', mode: 'cors',
                     credentials: 'include', signal: AbortSignal.timeout(8000)
                 });
-                if (res.status !== 200) { this._profileCache[key] = null; return null; }
-                const lg = (await res.json())?.data?.user?.result?.legacy;
-                if (!lg) { this._profileCache[key] = null; return null; }
-                const urls = (lg.entities?.url?.urls || []).map(u => u.expanded_url || u.url).join(' ');
-                const text = [lg.name, lg.description, lg.location, urls].filter(Boolean).join(' \n ');
-                this._profileCache[key] = text;
-                return text;
+                if (res.status !== 200) {
+                    if (res.status === 404) delete this._queryIds['SearchTimeline'];
+                    return null;
+                }
+                const data = await res.json();
+                // Flatten all entries across the timeline instructions.
+                const instructions = data?.data?.search_by_raw_query?.search_timeline?.timeline?.instructions || [];
+                const entries = [];
+                for (const ins of instructions) {
+                    if (Array.isArray(ins.entries)) entries.push(...ins.entries);
+                    else if (ins.entry) entries.push(ins.entry);
+                }
+                let matchedTerm = null;
+                for (const entry of entries) {
+                    if (!String(entry?.entryId || '').startsWith('tweet-')) continue;
+                    const result = entry?.content?.itemContent?.tweet_results?.result;
+                    const legacy = result?.legacy || result?.tweet?.legacy;
+                    const text = (legacy?.full_text || '').toLowerCase();
+                    const hit = terms.find(t => text.includes(t.toLowerCase()));
+                    if (hit) { matchedTerm = hit; break; }
+                    // A returned tweet entry means the search matched this account for
+                    // one of the terms even if we can't read the text; treat as a hit.
+                    if (!matchedTerm) matchedTerm = terms[0];
+                }
+                const out = { matched: !!matchedTerm, term: matchedTerm };
+                this._searchCache[cacheKey] = out;
+                return out;
             } catch (_) {
-                this._profileCache[key] = null;
                 return null;
             }
         },
@@ -903,17 +938,16 @@
               </div>
 
               <div class="tpm-section">
-                <h4>Keyword profile filter</h4>
-                <p>Scans each followed account's profile (display name, bio, location, link) for your terms. Built for research groups studying the prevalence of hate speech and other content on the platform. Matching is case-insensitive; comma- or newline-separated; <code>*</code> wildcards allowed.</p>
-                <label class="tpm-label" for="tpm-unf-kw">Terms to match</label>
+                <h4>Posted-word filter (X search)</h4>
+                <p>For each followed account, runs an X search (<code>from:user "term"</code>) to check whether they have ever <strong>posted</strong> any of your terms, then either protects or targets them. Built for research groups studying the prevalence of hate speech and other content on the platform. Each term is matched as an exact phrase; comma- or newline-separated. One search request per account (counts toward rate limits).</p>
+                <label class="tpm-label" for="tpm-unf-kw">Terms to search for in their posts</label>
                 <textarea id="tpm-unf-kw" class="tpm-input" placeholder="term one, term two">${Core.escapeHtml(s.get('unf.kw', '') || '')}</textarea>
-                <label class="tpm-label" for="tpm-unf-kw-action">When a profile matches</label>
+                <label class="tpm-label" for="tpm-unf-kw-action">When an account has posted a term</label>
                 <select id="tpm-unf-kw-action" class="tpm-input">
                   <option value="off">Do nothing (filter off)</option>
-                  <option value="protect">Protect — never unfollow matching accounts</option>
-                  <option value="target">Target — only act on matching accounts</option>
+                  <option value="protect">Protect — never unfollow accounts that posted it</option>
+                  <option value="target">Target — only act on accounts that posted it</option>
                 </select>
-                <label class="tpm-check"><input type="checkbox" id="tpm-unf-kw-deep" ${s.get('unf.kwDeep', true) ? 'checked' : ''}> Deep scan via API (reads the full bio, not just the visible row). One request per account; counts toward rate limits.</label>
                 <p class="tpm-note" id="tpm-unf-kw-note"></p>
               </div>
 
@@ -921,6 +955,10 @@
                 <button class="tpm-btn tpm-btn-ghost" id="tpm-unf-audit" type="button">Scan only (audit)</button>
                 <button class="tpm-btn tpm-btn-primary" id="tpm-unf-start" type="button">Start unfollowing</button>
               </div>
+              <div class="tpm-btns">
+                <button class="tpm-btn tpm-btn-ghost" id="tpm-unf-report" type="button">Scan for posted words → report (no unfollows)</button>
+              </div>
+              <div id="tpm-unf-report-out" style="display:none"></div>
               <div class="tpm-btns" id="tpm-unf-live" style="display:none">
                 <button class="tpm-btn tpm-btn-warn" id="tpm-unf-pause" type="button">Pause</button>
                 <button class="tpm-btn tpm-btn-danger" id="tpm-unf-stop" type="button">Stop</button>
@@ -936,9 +974,9 @@
             kwAction.value = s.get('unf.kwAction', 'off');
             const kwNote = () => {
                 const map = {
-                    off: 'Filter is off. The keyword field is ignored.',
-                    protect: 'Accounts whose profile matches will be SKIPPED (kept). Use this to preserve a study cohort while you trim everyone else.',
-                    target: 'ONLY accounts whose profile matches will be unfollowed. Non-matching accounts are skipped. Use the audit to preview the matched set before acting.'
+                    off: 'Filter is off. The terms field is ignored.',
+                    protect: 'Accounts that have posted a term will be SKIPPED (kept). Use this to preserve a study cohort while you trim everyone else.',
+                    target: 'ONLY accounts that have posted a term will be unfollowed. Others are skipped. Use Scan only to preview the matched set before acting.'
                 };
                 UI.el('tpm-unf-kw-note').textContent = map[kwAction.value] || '';
             };
@@ -946,6 +984,7 @@
             kwNote();
             UI.el('tpm-unf-audit').onclick = () => this.audit();
             UI.el('tpm-unf-start').onclick = () => this.start();
+            UI.el('tpm-unf-report').onclick = () => this.reportPostedWords();
             UI.el('tpm-unf-pause').onclick = () => this.togglePause();
             UI.el('tpm-unf-stop').onclick = () => { this.stop = true; this.setStatus('stop', '🔴 Stopping…'); };
         },
@@ -973,38 +1012,27 @@
                 (UI.el('tpm-unf-white').value.match(/[A-Za-z0-9_]+/g) || []).map(u => u.toLowerCase())
             );
 
-            // Keyword profile filter
+            // Posted-word filter (X search): terms the account may have posted.
             const kwRaw = UI.el('tpm-unf-kw').value || '';
             this.kwAction = UI.el('tpm-unf-kw-action').value;        // off | protect | target
-            this.kwDeep = UI.el('tpm-unf-kw-deep').checked;
-            this.kwTerms = kwRaw.split(/[\n,]+/).map(t => t.trim().toLowerCase()).filter(Boolean);
-            // Each term -> a RegExp; '*' becomes a wildcard, everything else escaped.
-            this.kwRegexes = this.kwTerms.map(t => {
-                const esc = t.replace(/[.+?^${}()|[\]\\]/g, '\\$&').replace(/\*/g, '.*');
-                return new RegExp(esc, 'i');
-            });
+            this.kwTerms = kwRaw.split(/[\n,]+/).map(t => t.trim()).filter(Boolean);
             if (this.kwAction !== 'off' && this.kwTerms.length === 0) this.kwAction = 'off';
 
             const s = Core.store;
             s.set('unf.max', this.MAX); s.set('unf.mind', this.MIN_DELAY / 1000); s.set('unf.maxd', this.MAX_DELAY / 1000);
             s.set('unf.cont', this.continuous); s.set('unf.cmin', this.PAUSE_MIN / 60000); s.set('unf.cmax', this.PAUSE_MAX / 60000);
             s.set('unf.private', this.skipPrivate); s.set('unf.mutuals', this.preserveMutuals); s.set('unf.white', [...this.whitelist]);
-            s.set('unf.kw', kwRaw); s.set('unf.kwAction', UI.el('tpm-unf-kw-action').value); s.set('unf.kwDeep', this.kwDeep);
+            s.set('unf.kw', kwRaw); s.set('unf.kwAction', UI.el('tpm-unf-kw-action').value);
         },
 
-        // Does this account's profile match any keyword term? Reads the visible
-        // cell text first (free); if deep scan is on, also fetches the full bio.
-        // Returns true/false, or null if it genuinely couldn't be determined.
-        async keywordMatches(cell, username) {
-            if (!this.kwRegexes || !this.kwRegexes.length) return false;
-            const visible = (cell?.innerText || '') + ' ' + (cell?.textContent || '');
-            if (this.kwRegexes.some(re => re.test(visible))) return true;
-            if (this.kwDeep) {
-                const text = await Core.getProfileText(username);
-                if (text == null) return null;   // fetch failed; let caller decide
-                if (this.kwRegexes.some(re => re.test(text))) return true;
-            }
-            return false;
+        // Has this account ever POSTED one of the configured terms? Runs an X
+        // search (from:user "term"). Returns true/false, or null if the search
+        // couldn't be completed (so the caller can skip rather than mis-act).
+        async keywordMatches(_cell, username) {
+            if (!this.kwTerms || !this.kwTerms.length) return false;
+            const r = await Core.userPostedTerm(username, this.kwTerms);
+            if (r == null) return null;
+            return r.matched;
         },
 
         setStatus(kind, text) {
@@ -1089,6 +1117,117 @@
             this.finishUI();
         },
 
+        // Report-only scan: walk the open follow list, search each account's posts
+        // for the configured terms, and produce a downloadable list of positive
+        // hits. Never unfollows anyone. For research/monitoring use.
+        async reportPostedWords() {
+            if (this.running) return;
+            this.readSettings();
+            if (!this.kwTerms || !this.kwTerms.length) {
+                this.setStatus('stop', '⚠️ Enter at least one term first');
+                return;
+            }
+            this.running = true; this.stop = false; this.paused = false;
+            UI.el('tpm-unf-audit').disabled = true;
+            UI.el('tpm-unf-start').disabled = true;
+            UI.el('tpm-unf-report').disabled = true;
+            UI.el('tpm-unf-live').style.display = 'flex';
+            UI.el('tpm-unf-pause').textContent = 'Pause';
+            this.setStatus('run', '🔍 Searching posts (no unfollows)…');
+            console.log(`%c[report] Searching followed accounts for: ${this.kwTerms.join(', ')}`, 'color:#1d9bf0;font-weight:bold');
+
+            const seen = new Set();
+            const hits = [];          // { username, term, scannedAt }
+            let scanned = 0, errors = 0, empty = 0;
+            const MAX_EMPTY = 8;
+
+            while (!this.stop && empty < MAX_EMPTY) {
+                await this.waitWhilePaused();
+                if (this.stop) break;
+                const cells = Array.from(document.querySelectorAll('[data-testid="UserCell"], [data-testid="cellInnerDiv"]'));
+                let found = false;
+                for (const cell of cells) {
+                    if (this.stop) break;
+                    await this.waitWhilePaused();
+                    if (!cell.querySelector('a[href^="/"]')) continue;
+                    const u = Follow.getUsername(cell);
+                    if (u === 'unknown' || seen.has(u)) continue;
+                    seen.add(u); found = true; scanned++;
+
+                    const r = await Core.userPostedTerm(u, this.kwTerms);
+                    if (r == null) {
+                        errors++;
+                        this.logAction(u, 'error', 'Post search failed');
+                    } else if (r.matched) {
+                        hits.push({ username: u, term: r.term, time: new Date().toISOString() });
+                        console.log(`%c[report] HIT @${u} — posted "${r.term}"`, 'color:#f4212e;font-weight:bold');
+                    }
+                    this.setStats(hits.length, scanned, errors);
+                    this.setNow(`Searched <strong>${scanned}</strong> · <strong>${hits.length}</strong> hits${errors ? ` · ${errors} errors` : ''}`);
+
+                    // Pace search requests to stay under the rate limit.
+                    await Core.sleep(this.MIN_DELAY);
+                }
+                if (!found) {
+                    empty++;
+                    const last = cells[cells.length - 1];
+                    if (last) last.scrollIntoView({ block: 'end', behavior: 'instant' });
+                    window.scrollBy(0, 800);
+                    await Core.sleep(1200);
+                } else { empty = 0; }
+            }
+
+            this.setStatus('idle', '✅ Report complete');
+            this.setNow(`Searched <strong>${scanned}</strong> accounts · <strong>${hits.length}</strong> posted a term${errors ? ` · ${errors} errors` : ''}`);
+            console.table(hits);
+            this.renderReport(hits, scanned, errors);
+            this.finishUI();
+            UI.el('tpm-unf-report').disabled = false;
+        },
+
+        // Render the hit list with copy + CSV/JSON download (no network, no deletes).
+        renderReport(hits, scanned, errors) {
+            const out = UI.el('tpm-unf-report-out');
+            if (!out) return;
+            if (!hits.length) {
+                out.style.display = '';
+                out.innerHTML = `<div class="tpm-section"><h4>Report</h4><p>Searched ${scanned} accounts. No account posted any of the terms${errors ? ` (${errors} could not be searched)` : ''}.</p></div>`;
+                return;
+            }
+            const rows = hits.map(h => `<li>@${Core.escapeHtml(h.username)} <span style="color:var(--muted)">— "${Core.escapeHtml(h.term)}"</span></li>`).join('');
+            out.style.display = '';
+            out.innerHTML = `
+              <div class="tpm-section">
+                <h4>Positive hits (${hits.length})</h4>
+                <p>Searched ${scanned} accounts${errors ? `, ${errors} could not be searched` : ''}. No accounts were unfollowed.</p>
+                <ul style="max-height:200px;overflow:auto;margin:0 0 10px;padding-left:18px">${rows}</ul>
+                <div class="tpm-btns">
+                  <button class="tpm-btn tpm-btn-ghost" id="tpm-unf-report-copy" type="button">Copy handles</button>
+                  <button class="tpm-btn tpm-btn-ghost" id="tpm-unf-report-csv" type="button">Download CSV</button>
+                  <button class="tpm-btn tpm-btn-ghost" id="tpm-unf-report-json" type="button">Download JSON</button>
+                </div>
+              </div>`;
+
+            const download = (name, type, content) => {
+                const a = document.createElement('a');
+                a.href = URL.createObjectURL(new Blob([content], { type }));
+                a.download = name; a.click();
+                setTimeout(() => URL.revokeObjectURL(a.href), 2000);
+            };
+            UI.el('tpm-unf-report-copy').onclick = () => {
+                navigator.clipboard?.writeText(hits.map(h => '@' + h.username).join('\n'));
+                this.setStatus('idle', '📋 Handles copied');
+            };
+            UI.el('tpm-unf-report-csv').onclick = () => {
+                const csv = 'username,matched_term,scanned_at\n' +
+                    hits.map(h => `${h.username},"${(h.term || '').replace(/"/g, '""')}",${h.time}`).join('\n');
+                download('posted-word-hits.csv', 'text/csv', csv);
+            };
+            UI.el('tpm-unf-report-json').onclick = () => {
+                download('posted-word-hits.json', 'application/json', JSON.stringify(hits, null, 2));
+            };
+        },
+
         async start() {
             if (this.running) return;
             this.readSettings();
@@ -1170,20 +1309,21 @@
                     this.setStats(total, skipped, this.MAX - batchCount); continue;
                 }
 
-                // Keyword profile filter: protect (skip matches) or target (skip non-matches).
+                // Posted-word filter: protect (skip those who posted it) or target
+                // (skip those who didn't). Runs an X search per account.
                 if (this.kwAction && this.kwAction !== 'off') {
-                    this.setNow(`Scanning @${Core.escapeHtml(username)}'s profile…`);
+                    this.setNow(`Searching @${Core.escapeHtml(username)}'s posts…`);
                     const matched = await this.keywordMatches(cell, username);
                     if (matched === null) {
-                        this.logAction(username, 'skipped', 'Keyword scan failed (profile unavailable)'); skipped++;
+                        this.logAction(username, 'skipped', 'Post search failed (could not query)'); skipped++;
                         this.setStats(total, skipped, this.MAX - batchCount); continue;
                     }
                     if (this.kwAction === 'protect' && matched) {
-                        this.logAction(username, 'skipped', 'Keyword match — protected'); skipped++;
+                        this.logAction(username, 'skipped', 'Posted a term — protected'); skipped++;
                         this.setStats(total, skipped, this.MAX - batchCount); continue;
                     }
                     if (this.kwAction === 'target' && !matched) {
-                        this.logAction(username, 'skipped', 'No keyword match (target mode)'); skipped++;
+                        this.logAction(username, 'skipped', 'Never posted a term (target mode)'); skipped++;
                         this.setStats(total, skipped, this.MAX - batchCount); continue;
                     }
                 }
@@ -1254,6 +1394,7 @@
             this.running = false;
             UI.el('tpm-unf-audit').disabled = false;
             UI.el('tpm-unf-start').disabled = false;
+            const rep = UI.el('tpm-unf-report'); if (rep) rep.disabled = false;
             UI.el('tpm-unf-live').style.display = 'none';
         }
     };

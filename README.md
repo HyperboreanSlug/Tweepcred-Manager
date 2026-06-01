@@ -90,7 +90,8 @@ Features:
 - **Skips mutuals** - people who follow you back are never unfollowed (toggle).
 - **Skips private/locked accounts** (toggle).
 - **Whitelist** - @handles to never unfollow, saved in your browser.
-- **Keyword profile filter** - scans each followed account's profile (display name, bio, location, link) for terms you supply, then either **protects** matches (never unfollow them) or **targets** them (only act on matches). Built for research groups studying the prevalence of hate speech and other content on the platform. Case-insensitive, supports `*` wildcards, optional deep scan reads the full bio via the API. Run the audit first to preview the matched set.
+- **Posted-word filter (X search)** - for each followed account, runs an X search (`from:user "term"`) to check whether they have ever **posted** any of your terms, then either **protects** them (never unfollow) or **targets** them (only act on matches). Each term is matched as an exact phrase; one search request per account. Built for research groups studying the prevalence of hate speech and other content on the platform.
+- **Scan for posted words (report only)** - a separate, read-only function that walks your follow list, searches each account's posts for the terms, and produces a downloadable list of positive hits (copy handles, CSV, or JSON). It never unfollows anyone - use it purely to measure and record who has posted the terms.
 - **Continuous mode** - batches of 190 with a 15-20 min cooldown between each, matching the rate-limit window. The only recommended way to clear large lists.
 - **Pause / Resume / Stop**, live stats, and a full session log in the console.
 
