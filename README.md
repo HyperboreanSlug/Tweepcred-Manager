@@ -2,11 +2,11 @@
 
 <p align="center">
   <strong>An all-in-one console script for managing your X.com "tweepcred" - X's internal reputation score.</strong><br>
-  Estimate your score, repair your follower/following ratio, and clean up old low-engagement tweets, from <em>one</em> panel.
+  Estimate your score, repair your follower/following ratio, track followers, sort following by following-count, and clean up old low-engagement tweets — from <em>one</em> panel.
 </p>
 
 <p align="center">
-  No extension · No API keys · Runs locally in your browser
+  Console paste · Greasemonkey/Tampermonkey · No API keys · Local session only
 </p>
 
 ---
@@ -33,6 +33,7 @@ The script is built around this constraint:
 | Tool | Default batch size | Default inter-action delay | Effective rate |
 | --- | --- | --- | --- |
 | **Unfollow** | 190 per batch | 3-35 s (random, human-like) | ~10-20 / min at defaults |
+| **Followers (enrich)** | user cap (default 200) | ~0.9–1.3 s per profile lookup | read-only GraphQL |
 | **Cleanup (export)** | 190 per auto-pause | no per-action delay (API-gated) | up to ~190 / 15 min |
 | **Cleanup (slow delete)** | 190 per auto-pause | 1.2 s between UI actions | up to ~190 / 15 min |
 
@@ -47,25 +48,53 @@ Slow delete drives the browser UI but calls the same `DeleteTweet` endpoint unde
 - The auto-pause in Cleanup (default: 15 min after every 190 deletions) follows the same logic. Tune it down rather than up.
 - If you see a *"you're doing that too much"* banner or a `429` in the console, **stop for the day**. Repeated 429s in a short window are what trigger locks.
 
-## The three tools, one panel
+## The tools, one panel
 
 | Tab | What it does | The tweepcred lever it pulls |
 | --- | --- | --- |
 | **Dashboard** | Estimates your tweepcred from public signals and gives concrete recommendations. | Tells you what to fix first. |
 | **Unfollow** | Mass-unfollows non-followers in batches of 190 or fewer with human-like delays. Skips mutuals, private accounts and a whitelist. | **Follower/following ratio** - the single biggest factor. |
+| **Followers** | Snapshot your followers over time (diff gains/losses). Scan Following and **sort by each account's following count**. Export CSV/JSON. | Visibility into network quality / ratio planning. |
 | **Cleanup** | Deletes Tweets / Likes / DMs from your data export (or slow-deletes from your profile), auto-pausing at 190 to respect the rate window. | **Engagement quality** - removes dead-weight tweets. |
 
-Everything lives in one **draggable, minimizable, mobile-friendly** dark glass panel. Your settings (delays, whitelist, toggles) are saved in your browser.
+Everything lives in one **draggable, minimizable, mobile-friendly** dark glass panel. Your settings (delays, whitelist, toggles, follower snapshots) are saved in your browser (`localStorage`).
+
+## Project layout (modular)
+
+| Path | Role |
+| --- | --- |
+| `src/modules/*.js` | One file per feature (`core`, `follow`, `ui`, `dashboard`, `unfollow`, `followers`, `cleanup`, `about`) |
+| `docs/modules/*.md` | Per-module maintenance docs |
+| `scripts/build.js` | Concatenates modules into a single dual-mode bundle |
+| `dist/tweepcred-manager.user.js` | Built userscript (install **or** console-paste) |
+| `tweepcredmanager.js` | Same build at repo root (back-compat) |
+
+```bash
+node scripts/build.js
+```
+
+Modules share one IIFE scope (not ES imports) so the **same artifact** works as:
+
+1. **Console paste** on x.com  
+2. **Persistent Greasemonkey / Tampermonkey / Violentmonkey** userscript (`@grant none`, `@run-at document-idle`)
 
 ## Quick start
+
+### Console
 
 1. Log into **[x.com](https://x.com)** in a desktop browser.
 2. Open the developer console: **F12** (or **Cmd+Option+I** on macOS) then the **Console** tab.
    - If the browser blocks pasting, type `allow pasting` and press **Enter** first.
-3. Paste the entire contents of [`tweepcred-manager.js`](tweepcred-manager.js) and press **Enter**.
+3. Paste the entire contents of [`dist/tweepcred-manager.user.js`](dist/tweepcred-manager.user.js) (or [`tweepcredmanager.js`](tweepcredmanager.js)) and press **Enter**.
 4. The **Tweepcred Manager** panel appears in the top-right. Pick a tab and go.
 
-You can also run it as a **userscript** with [Violentmonkey](https://violentmonkey.github.io/), [Tampermonkey](https://www.tampermonkey.net/) or FireMonkey - it includes a userscript header. This also works on mobile (Firefox + Tampermonkey on Android, Userscripts on iOS Safari).
+### Greasemonkey / Tampermonkey (persistent)
+
+1. Install [Violentmonkey](https://violentmonkey.github.io/), [Tampermonkey](https://www.tampermonkey.net/), [Greasemonkey](https://www.greasespot.net/), or FireMonkey.
+2. Create a new script and paste `dist/tweepcred-manager.user.js`, **or** use “Install from URL” / open the raw file if you host it.
+3. Visit x.com while logged in — the panel loads automatically at `document-idle`.
+
+Also works on mobile (Firefox + Tampermonkey on Android, Userscripts on iOS Safari).
 
 ## Using each tool
 
@@ -76,6 +105,23 @@ Opens to a **tweepcred score** computed as an **exact reproduction of X's 2023 o
 You can **look up any public handle** (or your own, auto-filled via the API), and it recalculates live as you edit. It then gives **actionable recommendations**, such as how many non-followers to unfollow to clear the ratio penalty, with a one-click jump to the Unfollow tool.
 
 > The one stage that **cannot** run in a browser is the global PageRank over the follow graph that consumes this mass. So the number shown is the per-user **mass/prior** that seeds tweepcred, computed exactly, not the PageRank output. Third-party calculators that fold in engagement and posting consistency are using signals that live in X's *ranking* model, not the open-source mass formula, so they are deliberately excluded here.
+
+### Followers
+
+**Track followers**
+
+1. Open **your profile → Followers**.
+2. Click **Snapshot followers**. The script scrolls the virtualized list and stores handles in `localStorage`.
+3. Later, snapshot again and click **Diff vs previous** for new vs lost followers.
+
+**Sort Following by following count**
+
+1. Open **your profile → Following**.
+2. Choose sort (default: following count high → low).
+3. Click **Scan & sort following**. Each visible account is enriched via `UserByScreenName` (followers, following, location).
+4. Export **CSV** or **JSON** if needed.
+
+This tab does **not** unfollow anyone. Cap enrichment with “Max accounts” to stay gentle on rate limits. See [`docs/modules/followers.md`](docs/modules/followers.md).
 
 ### Unfollow
 
