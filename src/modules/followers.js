@@ -128,7 +128,7 @@
 
         saveHistory(hist) {
             // Keep last 20 snapshots to avoid blowing localStorage
-            Core.store.set(this._historyKey(), hist.slice(-20));
+            return Core.store.set(this._historyKey(), hist.slice(-20));
         },
 
         refreshSnapshotSummary() {
@@ -223,9 +223,10 @@
                 };
                 const hist = this.loadHistory();
                 hist.push(snap);
-                this.saveHistory(hist);
+                const saved = this.saveHistory(hist);
                 this.refreshSnapshotSummary();
-                this.setStatus('idle', `Saved ${handles.length} followers`);
+                this.setStatus(saved ? 'idle' : 'stop',
+                    saved ? `Saved ${handles.length} followers` : `Collected ${handles.length}, but SAVE FAILED (browser storage full)`);
                 this.setNow(`Snapshot saved (${handles.length} handles). Use Diff vs previous to compare.`);
                 console.log('[TPM Followers] Snapshot', snap);
             } catch (e) {
@@ -304,7 +305,8 @@
                         private: acc.private,
                         enriched: !!profile
                     });
-                    this.renderTable();
+                    // ponytail: render every 10th row, not every row — full-table innerHTML per row is O(n²)
+                    if (i % 10 === 0 || i === toEnrich.length - 1) this.renderTable();
                     await Core.sleep(this.enrichDelayMs + Core.rand(0, 400));
                 }
 

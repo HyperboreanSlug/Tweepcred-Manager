@@ -251,7 +251,7 @@
                 } catch (_) { return fallback; }
             },
             set(key, val) {
-                try { localStorage.setItem('tpm:' + key, JSON.stringify(val)); } catch (_) { }
+                try { localStorage.setItem('tpm:' + key, JSON.stringify(val)); return true; } catch (_) { return false; }
             }
         },
 

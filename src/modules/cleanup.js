@@ -299,6 +299,7 @@
                             self.tIds.reverse();
                             self.tIds = self.tIds.slice(self.skip);
                             self.dCount = self.skip;
+                            self.startCount = self.skip;
                             self.tIds.reverse();
                             self.deleteTweets();
                         });
@@ -306,12 +307,14 @@
                         self.skip = UI.el('tpm-skipCount').value.length > 0 ? parseInt(UI.el('tpm-skipCount').value, 10) : 0;
                         self.tIds = self.tIds.slice(self.skip);
                         self.dCount = self.skip;
+                        self.startCount = self.skip;
                         self.tIds.reverse();
                         self.deleteFavs();
                     } else if (self.action === 'undm') {
                         self.skip = UI.el('tpm-skipCount').value.length > 0 ? parseInt(UI.el('tpm-skipCount').value, 10) : 0;
                         self.tIds = self.tIds.slice(self.skip);
                         self.dCount = self.skip;
+                        self.startCount = self.skip;
                         self.tIds.reverse();
                         if (self.deleteDMsOneByOne) self.deleteDMs(); else self.deleteConvos();
                     }
@@ -422,8 +425,12 @@
                             resolve('deleted and waiting');
                         } else resolve('deleted');
                     } else if (response.status === 429) {
-                        // Push the id back and let the loop retry it next pass.
-                        this.tIds.push(this.tId); await Core.sleep(1000); resolve('ratelimited');
+                        // Push the id back and wait out the reset instead of retrying hot.
+                        this.tIds.push(this.tId);
+                        const reset = parseInt(response.headers.get('x-rate-limit-reset'), 10);
+                        let s = reset ? reset - Math.floor(Date.now() / 1000) : 60;
+                        while (s > 0) { s = reset ? reset - Math.floor(Date.now() / 1000) : s - 1; this.info(`Ratelimited (429). Waiting ${Math.max(0, s)}s. ${this.dCount} deleted.`); await Core.sleep(1000); }
+                        resolve('ratelimited');
                     } else {
                         let detail = '';
                         try { detail = (await response.clone().text()).slice(0, 200); } catch (_) { }
@@ -560,11 +567,24 @@
             return Math.round(n);
         },
 
+        // Best-effort post date from a rendered tweet. Prefers the <time> tag,
+        // falls back to the snowflake id in the permalink. Null = unknown.
+        tweetDate(tweetEl) {
+            const dt = tweetEl.querySelector('time[datetime]')?.getAttribute('datetime');
+            const t = dt ? Date.parse(dt) : NaN;
+            if (!isNaN(t)) return new Date(t);
+            const m = (tweetEl.querySelector('a[href*="/status/"]')?.getAttribute('href') || '').match(/status\/(\d+)/);
+            return m ? Core.snowflakeToDate(m[1]) : null;
+        },
+
         async slowDelete() {
             // Irreversible: require an explicit confirm before touching the profile.
             if (!window.confirm('Slow delete will permanently delete tweets straight from your profile. This cannot be undone. Continue?')) return;
             this.readSettings();
+            const skipDays = parseInt(UI.el('tpm-skipDays')?.value, 10) || 0;
+            const cutoff = Date.now() - skipDays * 86400000;
             const drop = UI.el('tpm-drop'); if (drop) drop.style.display = 'none';
+            this.dCount = 0;
             await this.ensureTweetCount();
             this.total = this.TweetCount;
             this.createProgressBar();
@@ -599,6 +619,11 @@
                 if (tweetEl && Core.username) {
                     const author = this.tweetAuthorHandle(tweetEl);
                     if (author && author !== Core.username.toLowerCase()) { tweetEl.remove(); continue; }
+                }
+                if (tweetEl && skipDays > 0) {
+                    const date = this.tweetDate(tweetEl);
+                    // Unknown date => spare it; deleting on a guess is irreversible.
+                    if (!date || date.getTime() > cutoff) { this.sparedCount++; if (this.total > 0) this.total--; tweetEl.remove(); continue; }
                 }
                 if (tweetEl && this.spareThreshold > 0) {
                     const likes = this.likesFromTweetElement(tweetEl);
