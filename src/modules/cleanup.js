@@ -661,7 +661,7 @@
             let stuckCount = 0, lastTopId = '';
             let exitReason = '';
             let waitRounds = 0;
-            const maxWaitRounds = 3;
+            const maxWaitRounds = 5;
             const waitSeconds = 300;
 
             while (true) {
