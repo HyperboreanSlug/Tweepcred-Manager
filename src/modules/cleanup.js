@@ -295,10 +295,16 @@
                 self.total = self.tIds.length;
 
                 const labels = { untweet: 'tweets', unfav: 'likes', undm: 'DM conversations' };
+                // A run must never die silently: any throw inside the async delete
+                // engines surfaces in the info line instead of an unhandled rejection.
+                const failGuard = (p) => p.catch(err => {
+                    console.error('[TPM] Run failed:', err);
+                    self.info(`Run failed: ${(err && err.message) || err}. Check the console for details.`);
+                });
                 self._pendingRun = () => {
                     self.createProgressBar();
                     if (self.action === 'untweet') {
-                        self.ensureTweetCount().then(() => {
+                        failGuard(self.ensureTweetCount().then(() => {
                             const skipVal = UI.el('tpm-skipCount').value;
                             if (skipVal.length < 1) {
                                 self.skip = Math.max(0, self.total - self.TweetCount - parseInt(self.total / 20));
@@ -309,22 +315,22 @@
                             self.dCount = self.skip;
                             self.startCount = self.skip;
                             self.tIds.reverse();
-                            self.deleteTweets();
-                        });
+                            return self.deleteTweets();
+                        }));
                     } else if (self.action === 'unfav') {
                         self.skip = UI.el('tpm-skipCount').value.length > 0 ? parseInt(UI.el('tpm-skipCount').value, 10) : 0;
                         self.tIds = self.tIds.slice(self.skip);
                         self.dCount = self.skip;
                         self.startCount = self.skip;
                         self.tIds.reverse();
-                        self.deleteFavs();
+                        failGuard(self.deleteFavs());
                     } else if (self.action === 'undm') {
                         self.skip = UI.el('tpm-skipCount').value.length > 0 ? parseInt(UI.el('tpm-skipCount').value, 10) : 0;
                         self.tIds = self.tIds.slice(self.skip);
                         self.dCount = self.skip;
                         self.startCount = self.skip;
                         self.tIds.reverse();
-                        if (self.deleteDMsOneByOne) self.deleteDMs(); else self.deleteConvos();
+                        failGuard(self.deleteDMsOneByOne ? self.deleteDMs() : self.deleteConvos());
                     }
                 };
 
@@ -653,6 +659,7 @@
             let emptyScans = 0;
             const maxEmptyScans = 12;
             let stuckCount = 0, lastTopId = '';
+            let exitReason = '';
 
             while (true) {
                 await Core.sleep(1200);
@@ -663,7 +670,10 @@
                     const retry = Array.from(document.querySelectorAll('[role="button"], button')).find(b => /retry|try again|reload/i.test(b.textContent));
                     if (retry) retry.click();
                     window.scrollTo(0, document.body.scrollHeight);
-                    if (++emptyScans >= maxEmptyScans) break;
+                    if (++emptyScans >= maxEmptyScans) {
+                        exitReason = 'X stopped loading more tweets — usually a temporary rate limit on the timeline, or the end of the list';
+                        break;
+                    }
                     await Core.sleep(6000); continue;
                 }
                 emptyScans = 0;
@@ -736,9 +746,12 @@
                     const backoff = Math.min(60000, 4000 * consecutiveErrors);
                     this.info(`Hit a snag (likely a rate limit). Waiting ${Math.round(backoff / 1000)}s. ${this.dCount} deleted.`);
                     await Core.sleep(backoff);
-                    if (consecutiveErrors >= maxConsecutiveErrors) break;
+                    if (consecutiveErrors >= maxConsecutiveErrors) {
+                        exitReason = `${maxConsecutiveErrors} consecutive UI errors (usually an X rate limit on deletions)`;
+                        break;
+                    }
                 }
             }
-            this.info(`Finished. Total deleted: ${this.dCount} Tweets. Reload to confirm.`);
+            this.info(`Finished. Total deleted: ${this.dCount} Tweets.${exitReason ? ` Stopped early: ${exitReason}. Wait 10-15 minutes, reload the page, and run again to continue.` : ''} Reload to confirm.`);
         }
     };

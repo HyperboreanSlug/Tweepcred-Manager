@@ -70,7 +70,9 @@
             urls.sort((a, b) => rank(b) - rank(a));
             for (const u of urls) {
                 try {
-                    const res = await fetch(u, { credentials: 'omit' });
+                    // Timeout matters: a stalled bundle download here hangs the
+                    // delete run before its first request, with nothing on screen.
+                    const res = await fetch(u, { credentials: 'omit', signal: AbortSignal.timeout(15000) });
                     if (!res.ok) continue;
                     const id = this._extractQueryId(await res.text(), operationName);
                     if (id) { this._queryIds[operationName] = id; delete this._queryIdMisses[operationName]; return id; }
