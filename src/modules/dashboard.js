@@ -140,7 +140,7 @@
                 });
                 if (res.status !== 200) {
                     // A stale sniffed/cached id can 404; drop it so the next try re-resolves.
-                    if (res.status === 404) delete Core._queryIds['UserByScreenName'];
+                    if (res.status === 404) { delete Core._queryIds['UserByScreenName']; delete Core._queryIdMisses['UserByScreenName']; }
                     console.log(`[TPM] Profile fetch failed (HTTP ${res.status}) for @${screen_name}.`);
                     return;
                 }

@@ -190,7 +190,7 @@
             const seen = new Set();
             const kwMatches = [];
             let mutuals = 0, nonFollowers = 0, privates = 0, whitelisted = 0, kwMatched = 0, empty = 0;
-            while (!this.stop && empty < 8) {
+            while (!this.stop && empty < 15) {
                 await this.waitWhilePaused();
                 const cells = Array.from(document.querySelectorAll('[data-testid="UserCell"], [data-testid="cellInnerDiv"]'));
                 let found = false;
@@ -219,7 +219,7 @@
                     const last = cells[cells.length - 1];
                     if (last) last.scrollIntoView({ block: 'end', behavior: 'instant' });
                     window.scrollBy(0, 800);
-                    await Core.sleep(1200);
+                    await Core.sleep(2000);
                 } else { empty = 0; }
             }
 
@@ -253,7 +253,7 @@
             const seen = new Set();
             const hits = [];          // { username, term, scannedAt }
             let scanned = 0, errors = 0, empty = 0;
-            const MAX_EMPTY = 8;
+            const MAX_EMPTY = 15;
 
             while (!this.stop && empty < MAX_EMPTY) {
                 await this.waitWhilePaused();
@@ -287,7 +287,7 @@
                     const last = cells[cells.length - 1];
                     if (last) last.scrollIntoView({ block: 'end', behavior: 'instant' });
                     window.scrollBy(0, 800);
-                    await Core.sleep(1200);
+                    await Core.sleep(2000);
                 } else { empty = 0; }
             }
 
@@ -356,7 +356,9 @@
             let total = 0, batchCount = 0, skipped = 0, batchNum = 1;
             const processed = new Set();
             let emptyScrolls = 0;
-            const MAX_EMPTY = 8;
+            // ~30s of patience: X's lazy list loader stalls when rate-limited, and
+            // quitting after 10s ends runs early.
+            const MAX_EMPTY = 15;
             this.setStats(0, 0, this.MAX);
 
             const randomDelay = () => this.MIN_DELAY + Math.floor(Math.random() * (this.MAX_DELAY - this.MIN_DELAY));
@@ -387,7 +389,7 @@
                     const last = cells[cells.length - 1];
                     if (last) last.scrollIntoView({ block: 'end', behavior: 'instant' });
                     window.scrollBy(0, 800);
-                    await Core.sleep(1200);
+                    await Core.sleep(2000);
                     if (++emptyScrolls >= MAX_EMPTY) { console.log('🏁 End of list.'); break; }
                     continue;
                 }

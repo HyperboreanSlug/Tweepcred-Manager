@@ -121,6 +121,7 @@
             this.startTime = Date.now();
             this.startCount = this.dCount;
             this._fails = 0;
+            this._netRetries = {};
             const area = UI.el('tpm-clean-progress');
             area.innerHTML = `
               <div style="display:flex;justify-content:space-between;align-items:baseline;margin:6px 0">
@@ -253,9 +254,16 @@
             const self = this;
             const fr = new FileReader();
             fr.onloadend = function (evt) {
-                const cutpoint = evt.target.result.indexOf('= ');
-                const filestart = evt.target.result.slice(0, cutpoint);
-                const json = JSON.parse(evt.target.result.slice(cutpoint + 1));
+                self.action = '';
+                let filestart, json;
+                try {
+                    const cutpoint = evt.target.result.indexOf('= ');
+                    filestart = evt.target.result.slice(0, cutpoint);
+                    json = JSON.parse(evt.target.result.slice(cutpoint + 1));
+                } catch (_) {
+                    self.info('Could not read that file. Use an unmodified file from the X data export.');
+                    return;
+                }
 
                 if (filestart.includes('.tweet_headers.')) {
                     if (self.needsTweetsFileForLikes(json)) { self.promptForTweetsFile(); return; }
@@ -404,12 +412,12 @@
                             this._fails = (this._fails || 0) + 1;
                             console.warn(`[TPM] Delete FAILED for ${this.tId}: ${msg}`, payload.errors);
                             this.info(`Delete failed: ${msg} (${this.dCount} done).`);
-                            // Everything failing with nothing deleted => stale query id or
-                            // auth/CSRF. Stop instead of grinding through the whole list.
-                            if (this._fails >= 8 && this.dCount === this.startCount) {
+                            // Sustained failures => stale query id, expired login or rotated
+                            // CSRF. Stop instead of burning the rest of the list doing nothing.
+                            if (this._fails >= 15) {
                                 this.tIds = [];
-                                this.info(`Stopped: ${this._fails} failures, 0 deletions. "${msg}". The delete query id or your login/CSRF token is likely stale — reload X and rerun.`);
-                                console.error('[TPM] Aborting: repeated GraphQL failures, nothing deleted.');
+                                this.info(`Stopped: ${this._fails} consecutive failures. "${msg}". The delete query id or your login/CSRF token is likely stale — reload X and rerun.`);
+                                console.error('[TPM] Aborting: repeated GraphQL failures.');
                             }
                             resolve('error');
                             return;
@@ -437,18 +445,27 @@
                         this._fails = (this._fails || 0) + 1;
                         console.warn(`[TPM] Delete HTTP ${response.status} for ${this.tId}. ${detail}`);
                         this.info(`Delete failed (HTTP ${response.status}). ${this.dCount} done.`);
-                        if (this._fails >= 8 && this.dCount === this.startCount) {
+                        if (this._fails >= 15) {
                             this.tIds = [];
-                            this.info(`Stopped: repeated HTTP ${response.status}. Reload X / re-log in and retry.`);
+                            this.info(`Stopped: 15 consecutive HTTP ${response.status} errors. Reload X / re-log in and retry.`);
                         }
                         resolve('error');
                     }
                 } catch (error) {
-                    if (error.name === 'AbortError' || error.Name === 'AbortError') {
-                        this.tIds.push(this.tId);
-                        let s = 15; while (s > 0) { s--; this.info(`Timeout. Waiting ${s}s. ${this.dCount} deleted.`); await Core.sleep(1000); }
+                    // Timeout or network error: retry the id a few times (queued last),
+                    // then drop it — a hard cap so one bad id can't hang the run.
+                    const isTimeout = error.name === 'AbortError' || error.Name === 'AbortError';
+                    console.warn('[TPM] Delete request failed:', error);
+                    this._netRetries = this._netRetries || {};
+                    const n = (this._netRetries[this.tId] || 0) + 1;
+                    if (n < 3) {
+                        this._netRetries[this.tId] = n;
+                        this.tIds.unshift(this.tId);
+                        let s = isTimeout ? 15 : 3;
+                        while (s > 0) { s--; this.info(`${isTimeout ? 'Timeout' : 'Network error'}. Waiting ${s}s. ${this.dCount} deleted.`); await Core.sleep(1000); }
                     } else {
-                        console.warn('[TPM] Delete request threw:', error);
+                        delete this._netRetries[this.tId];
+                        console.warn(`[TPM] Giving up on ${this.tId} after ${n} network failures.`);
                     }
                     resolve('error');
                 }
@@ -489,14 +506,25 @@
         },
 
         async deleteConvos() {
+            const retries = {};
             while (this.tIds.length > 0) {
                 this.tId = this.tIds.pop();
                 const url = Core.baseUrl + this.deleteConvoURL.replace('USER_ID-CONVERSATION_ID', this.tId);
-                const response = await fetch(url, {
-                    headers: Core.apiHeaders('application/x-www-form-urlencoded'), referrer: `${Core.baseUrl}/messages`,
-                    body: 'dm_secret_conversations_enabled=false&krs_registration_enabled=true&cards_platform=Web-12&include_cards=1&include_ext_alt_text=true&include_ext_limited_action_results=true&include_quote_count=true&include_reply_count=1&tweet_mode=extended&include_ext_views=true&dm_users=false&include_groups=true&include_inbox_timelines=true&include_ext_media_color=true&supports_reactions=true&supports_edit=true&include_conversation_info=true',
-                    method: 'POST', mode: 'cors', credentials: 'include', signal: AbortSignal.timeout(5000)
-                });
+                let response;
+                try {
+                    response = await fetch(url, {
+                        headers: Core.apiHeaders('application/x-www-form-urlencoded'), referrer: `${Core.baseUrl}/messages`,
+                        body: 'dm_secret_conversations_enabled=false&krs_registration_enabled=true&cards_platform=Web-12&include_cards=1&include_ext_alt_text=true&include_ext_limited_action_results=true&include_quote_count=true&include_reply_count=1&tweet_mode=extended&include_ext_views=true&dm_users=false&include_groups=true&include_inbox_timelines=true&include_ext_media_color=true&supports_reactions=true&supports_edit=true&include_conversation_info=true',
+                        method: 'POST', mode: 'cors', credentials: 'include', signal: AbortSignal.timeout(5000)
+                    });
+                } catch (error) {
+                    // Timeout/network error: retry a few times, then skip — one bad
+                    // request must not kill the whole run.
+                    console.warn('[TPM] Convo delete request failed:', error);
+                    retries[this.tId] = (retries[this.tId] || 0) + 1;
+                    if (retries[this.tId] < 3) { this.tIds.unshift(this.tId); await Core.sleep(5000); }
+                    continue;
+                }
                 if (response.status === 204) {
                     this.dCount++; this.updateProgressBar(); await this.maybePause();
                     if (response.headers.get('x-rate-limit-remaining') != null && response.headers.get('x-rate-limit-remaining') < 1) {
@@ -517,30 +545,44 @@
             this.info('Exporting bookmarks…');
             let variables = '';
             this.bookmarks = []; this.bookmarksNext = ''; this.dCount = 0;
+            let fails = 0;
             while (this.bookmarksNext.length > 0 || this.bookmarks.length === 0) {
                 variables = this.bookmarksNext.length > 0
                     ? `{"count":20,"cursor":"${this.bookmarksNext}","includePromotedContent":false}`
                     : '{"count":20,"includePromotedContent":false}';
-                const response = await fetch(Core.baseUrl + this.bookmarksURL + new URLSearchParams({
-                    variables,
-                    features: '{"graphql_timeline_v2_bookmark_timeline":true,"rweb_tipjar_consumption_enabled":true,"responsive_web_graphql_exclude_directive_enabled":true,"verified_phone_label_enabled":false,"creator_subscriptions_tweet_preview_api_enabled":true,"responsive_web_graphql_timeline_navigation_enabled":true,"responsive_web_graphql_skip_user_profile_image_extensions_enabled":false,"communities_web_enable_tweet_community_results_fetch":true,"c9s_tweet_anatomy_moderator_badge_enabled":true,"articles_preview_enabled":true,"responsive_web_edit_tweet_api_enabled":true,"graphql_is_translatable_rweb_tweet_is_translatable_enabled":true,"view_counts_everywhere_api_enabled":true,"longform_notetweets_consumption_enabled":true,"responsive_web_twitter_article_tweet_consumption_enabled":true,"tweet_awards_web_tipping_enabled":false,"creator_subscriptions_quote_tweet_preview_enabled":false,"freedom_of_speech_not_reach_fetch_enabled":true,"standardized_nudges_misinfo":true,"tweet_with_visibility_results_prefer_gql_limited_actions_policy_enabled":true,"rweb_video_timestamps_enabled":true,"longform_notetweets_rich_text_read_enabled":true,"longform_notetweets_inline_media_enabled":true,"responsive_web_enhance_cards_enabled":false}'
-                }), { headers: Core.apiHeaders(), referrer: `${Core.baseUrl}/i/bookmarks`, referrerPolicy: 'strict-origin-when-cross-origin', method: 'GET', mode: 'cors', credentials: 'include' });
+                try {
+                    const response = await fetch(Core.baseUrl + this.bookmarksURL + new URLSearchParams({
+                        variables,
+                        features: '{"graphql_timeline_v2_bookmark_timeline":true,"rweb_tipjar_consumption_enabled":true,"responsive_web_graphql_exclude_directive_enabled":true,"verified_phone_label_enabled":false,"creator_subscriptions_tweet_preview_api_enabled":true,"responsive_web_graphql_timeline_navigation_enabled":true,"responsive_web_graphql_skip_user_profile_image_extensions_enabled":false,"communities_web_enable_tweet_community_results_fetch":true,"c9s_tweet_anatomy_moderator_badge_enabled":true,"articles_preview_enabled":true,"responsive_web_edit_tweet_api_enabled":true,"graphql_is_translatable_rweb_tweet_is_translatable_enabled":true,"view_counts_everywhere_api_enabled":true,"longform_notetweets_consumption_enabled":true,"responsive_web_twitter_article_tweet_consumption_enabled":true,"tweet_awards_web_tipping_enabled":false,"creator_subscriptions_quote_tweet_preview_enabled":false,"freedom_of_speech_not_reach_fetch_enabled":true,"standardized_nudges_misinfo":true,"tweet_with_visibility_results_prefer_gql_limited_actions_policy_enabled":true,"rweb_video_timestamps_enabled":true,"longform_notetweets_rich_text_read_enabled":true,"longform_notetweets_inline_media_enabled":true,"responsive_web_enhance_cards_enabled":false}'
+                    }), { headers: Core.apiHeaders(), referrer: `${Core.baseUrl}/i/bookmarks`, referrerPolicy: 'strict-origin-when-cross-origin', method: 'GET', mode: 'cors', credentials: 'include' });
 
-                if (response.status === 200) {
-                    const data = await response.json();
-                    data.data.bookmark_timeline_v2.timeline.instructions[0].entries.forEach((item) => {
-                        if (item.entryId.includes('tweet')) { this.dCount++; this.bookmarks.push(item.content.itemContent.tweet_results.result); }
-                        else if (item.entryId.includes('cursor-bottom')) { this.bookmarksNext = this.bookmarksNext !== item.content.value ? item.content.value : ''; }
-                    });
-                    this.info(`${this.dCount} bookmarks collected`);
-                } else console.log(response);
-
-                if (!response.headers.get('x-rate-limit-remaining') && response.headers.get('x-rate-limit-remaining') < 1) {
-                    this.ratelimitreset = response.headers.get('x-rate-limit-reset');
-                    let s = this.ratelimitreset - Math.floor(Date.now() / 1000);
-                    while (s > 0) { s = this.ratelimitreset - Math.floor(Date.now() / 1000); this.info(`Ratelimited. Waiting ${s}s. ${this.dCount} collected.`); await Core.sleep(1000); }
+                    if (response.status === 200) {
+                        const data = await response.json();
+                        const entries = data?.data?.bookmark_timeline_v2?.timeline?.instructions?.[0]?.entries || [];
+                        entries.forEach((item) => {
+                            if (item.entryId?.includes('tweet')) { this.dCount++; this.bookmarks.push(item.content?.itemContent?.tweet_results?.result); }
+                            else if (item.entryId?.includes('cursor-bottom')) { this.bookmarksNext = this.bookmarksNext !== item.content.value ? item.content.value : ''; }
+                        });
+                        this.info(`${this.dCount} bookmarks collected`);
+                        fails = 0;
+                        const remaining = response.headers.get('x-rate-limit-remaining');
+                        if (remaining != null && remaining < 1) {
+                            this.ratelimitreset = response.headers.get('x-rate-limit-reset');
+                            let s = this.ratelimitreset - Math.floor(Date.now() / 1000);
+                            while (s > 0) { s = this.ratelimitreset - Math.floor(Date.now() / 1000); this.info(`Ratelimited. Waiting ${s}s. ${this.dCount} collected.`); await Core.sleep(1000); }
+                        }
+                    } else {
+                        console.log(response);
+                        if (++fails >= 5) { this.info(`Bookmark export stopped after ${fails} failed requests (${this.bookmarks.length} collected).`); break; }
+                        await Core.sleep(3000);
+                    }
+                } catch (error) {
+                    console.warn('[TPM] Bookmark export error:', error);
+                    if (++fails >= 5) { this.info(`Bookmark export stopped after repeated errors (${this.bookmarks.length} collected).`); break; }
+                    await Core.sleep(3000);
                 }
             }
+            if (!this.bookmarks.length) { this.info('No bookmarks collected.'); return; }
             const blob = new Blob([JSON.stringify(this.bookmarks)], { type: 'text/plain' });
             const a = document.createElement('a');
             a.innerText = 'Download bookmarks';

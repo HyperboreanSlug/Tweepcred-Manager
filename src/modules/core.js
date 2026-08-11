@@ -22,6 +22,9 @@
         // GraphQL operationName -> queryId, discovered at runtime (X rotates these,
         // so nothing is hardcoded). Filled by the passive sniffer and resolveQueryId.
         _queryIds: {},
+        // operationName -> timestamp of a FAILED resolve, so unresolvable ops don't
+        // re-download every client bundle on each call (5-minute negative cache).
+        _queryIdMisses: {},
 
         init() {
             this.ct0 = this.getCookie('ct0');
@@ -57,6 +60,8 @@
         // the loaded X JS bundles for it. Returns null if it can't be found.
         async resolveQueryId(operationName) {
             if (this._queryIds[operationName]) return this._queryIds[operationName];
+            const miss = this._queryIdMisses[operationName];
+            if (miss && Date.now() - miss < 300000) return null;
             const rank = (u) => (/\bapi[.\-]/.test(u) ? 3 : 0) + (/\bmain[.\-]/.test(u) ? 2 : 0) + (/endpoint/i.test(u) ? 2 : 0);
             let urls = [];
             try { urls = performance.getEntriesByType('resource').map(r => r.name); } catch (_) { }
@@ -68,9 +73,10 @@
                     const res = await fetch(u, { credentials: 'omit' });
                     if (!res.ok) continue;
                     const id = this._extractQueryId(await res.text(), operationName);
-                    if (id) { this._queryIds[operationName] = id; return id; }
+                    if (id) { this._queryIds[operationName] = id; delete this._queryIdMisses[operationName]; return id; }
                 } catch (_) { }
             }
+            this._queryIdMisses[operationName] = Date.now();
             return this._queryIds[operationName] || null;
         },
 
@@ -127,7 +133,9 @@
                 authorization: this.authorization,
                 'content-type': contentType,
                 'x-client-transaction-id': this.transaction_id,
-                'x-csrf-token': this.ct0,
+                // Re-read ct0 live: X rotates this cookie and long runs (hours,
+                // with auto-pauses) outlive the copy captured at init.
+                'x-csrf-token': this.getCookie('ct0') || this.ct0,
                 'x-twitter-active-user': 'yes',
                 'x-twitter-auth-type': 'OAuth2Session'
             };
@@ -178,7 +186,7 @@
                     credentials: 'include', signal: AbortSignal.timeout(8000)
                 });
                 if (res.status !== 200) {
-                    if (res.status === 404) delete this._queryIds['SearchTimeline'];
+                    if (res.status === 404) { delete this._queryIds['SearchTimeline']; delete this._queryIdMisses['SearchTimeline']; }
                     return null;
                 }
                 const data = await res.json();
@@ -313,7 +321,7 @@
                     method: 'GET', mode: 'cors', credentials: 'include',
                     signal: AbortSignal.timeout(8000)
                 });
-                if (res.status === 404) delete this._queryIds['UserByScreenName'];
+                if (res.status === 404) { delete this._queryIds['UserByScreenName']; delete this._queryIdMisses['UserByScreenName']; }
                 if (res.status !== 200) return null;
                 const result = (await res.json())?.data?.user?.result;
                 const lg = result?.legacy;
