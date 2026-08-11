@@ -26,6 +26,10 @@
         bookmarks: [],
         bookmarksNext: '',
         _fails: 0,
+        // Slow-delete session persistence: long runs leak memory inside X's own
+        // page code until the tab crashes ("out of memory"). The session is
+        // stored here so a wedged page can reload and resume where it left off.
+        slowSessionKey: 'cleanup.slowSession',
         tweetResultQueryId: '7xflPyRiUxGVbJd4uWmbKg',
         deleteConvoURL: '/i/api/1.1/dm/conversation/USER_ID-CONVERSATION_ID/delete.json',
         bookmarksURL: '/i/api/graphql/L7vvM2UluPgWOW4GDvWyvw/Bookmarks?',
@@ -34,6 +38,14 @@
 
         render() {
             UI.el('tpm-pane-cleanup').innerHTML = `
+              <div class="tpm-section" id="tpm-slow-resume" style="display:none">
+                <h4>Slow delete session in progress</h4>
+                <p class="tpm-warn-box" style="margin:0 0 10px"><strong id="tpm-slow-resume-n">0</strong> deleted so far. If the timeline stays crashed for 60 minutes the page reloads itself to clear X's memory — resume the session here.</p>
+                <div class="tpm-btns">
+                  <button class="tpm-btn tpm-btn-primary" id="tpm-slow-resume-go" type="button">Resume deleting</button>
+                  <button class="tpm-btn tpm-btn-ghost" id="tpm-slow-resume-stop" type="button">Stop session</button>
+                </div>
+              </div>
               <div class="tpm-section">
                 <h4>Delete from your data export</h4>
                 <p>Request your data at <a href="https://x.com/settings/your_twitter_data/data" target="_blank">Settings → Your data</a>, unzip it, then drop a file here.</p>
@@ -86,6 +98,19 @@
             UI.el('tpm-file').addEventListener('change', () => this.processFile(), false);
             UI.el('tpm-exportBookmarks').onclick = () => this.exportBookmarks();
             UI.el('tpm-slowDelete').onclick = () => this.slowDelete();
+
+            // Offer a one-click resume when a slow-delete session survived a reload.
+            const session = Core.store.get(this.slowSessionKey, null);
+            if (session && session.active) {
+                UI.el('tpm-slow-resume').style.display = '';
+                UI.el('tpm-slow-resume-n').textContent = (session.deleted || 0).toLocaleString();
+            }
+            UI.el('tpm-slow-resume-go').onclick = () => this.slowDelete(true);
+            UI.el('tpm-slow-resume-stop').onclick = () => {
+                Core.store.set(this.slowSessionKey, null);
+                UI.el('tpm-slow-resume').style.display = 'none';
+                this.info('Slow delete session stopped.');
+            };
 
             // Start/cancel for the previewed deletion run. The Start button stays
             // disabled until the user ticks the irreversible-action confirmation.
@@ -630,14 +655,36 @@
             return m ? m[1] : null;
         },
 
-        async slowDelete() {
-            // Irreversible: require an explicit confirm before touching the profile.
-            if (!window.confirm('Slow delete will permanently delete tweets straight from your profile. This cannot be undone. Continue?')) return;
+        async slowDelete(resume = false) {
+            let session = Core.store.get(this.slowSessionKey, null);
+            if (resume) {
+                if (!session || !session.active) return;
+            } else {
+                // Irreversible: require an explicit confirm before touching the profile.
+                if (!window.confirm('Slow delete will permanently delete tweets straight from your profile. This cannot be undone. Continue?')) return;
+                session = {
+                    active: true, deleted: 0,
+                    skipDays: UI.el('tpm-skipDays').value, spareLikes: UI.el('tpm-spareLikes').value,
+                    liveLikes: UI.el('tpm-liveLikes').checked, pauseEvery: UI.el('tpm-pauseEvery').value,
+                    pauseMinutes: UI.el('tpm-pauseMinutes').value
+                };
+            }
+            // Restore the session's settings so this page lifetime continues the same job.
+            UI.el('tpm-skipDays').value = session.skipDays || '';
+            UI.el('tpm-spareLikes').value = session.spareLikes || '';
+            UI.el('tpm-liveLikes').checked = !!session.liveLikes;
+            UI.el('tpm-pauseEvery').value = session.pauseEvery || 190;
+            UI.el('tpm-pauseMinutes').value = session.pauseMinutes || 15;
+            Core.store.set(this.slowSessionKey, session);
+            const endSession = () => Core.store.set(this.slowSessionKey, null);
+            const rb = UI.el('tpm-slow-resume'); if (rb) rb.style.display = 'none';
+
             this.readSettings();
             const skipDays = parseInt(UI.el('tpm-skipDays')?.value, 10) || 0;
             const cutoff = Date.now() - skipDays * 86400000;
             const drop = UI.el('tpm-drop'); if (drop) drop.style.display = 'none';
-            this.dCount = 0;
+            this.dCount = session.deleted || 0;
+            let pageDeletes = 0;
             await this.ensureTweetCount();
             this.total = this.TweetCount;
             this.createProgressBar();
@@ -661,8 +708,8 @@
             let stuckCount = 0, lastTopId = '';
             let exitReason = '';
             let waitRounds = 0;
-            const maxWaitRounds = 5;
             const waitSeconds = 300;
+            const stallReloadAfter = 3600;   // 1h of dead timeline => reload the page
 
             while (true) {
                 await Core.sleep(1200);
@@ -674,15 +721,29 @@
                     if (retry) retry.click();
                     window.scrollTo(0, document.body.scrollHeight);
                     if (++emptyScans >= maxEmptyScans) {
-                        if (waitRounds >= maxWaitRounds) {
-                            exitReason = `the timeline stayed empty through ${maxWaitRounds} wait rounds — likely the end of the list`;
-                            break;
+                        if (waitRounds * waitSeconds >= stallReloadAfter) {
+                            // An hour of dead timeline: either the list is exhausted or the
+                            // page is wedged (X leaks memory until it crashes). If this page
+                            // lifetime deleted nothing AND the reload before it also deleted
+                            // nothing, call it end-of-list; otherwise reload for a clean heap.
+                            if (pageDeletes === 0) {
+                                session.staleReloads = (session.staleReloads || 0) + 1;
+                                if (session.staleReloads >= 2) {
+                                    exitReason = 'the timeline stayed dead for over 2 hours across a reload — the list looks fully deleted';
+                                    break;
+                                }
+                            } else session.staleReloads = 0;
+                            Core.store.set(this.slowSessionKey, session);
+                            this.info('Timeline dead for 60 minutes — reloading the page to recover. Press Resume when it returns.');
+                            await Core.sleep(2000);
+                            location.reload();
+                            return;
                         }
                         // X rate-limits the timeline itself during bulk deletes.
                         // Wait it out, then keep trying instead of quitting.
                         waitRounds++;
                         let s = waitSeconds;
-                        while (s > 0) { s--; this.info(`Timeline stopped loading. Retrying in ${Core.fmtDuration(s)} (wait ${waitRounds}/${maxWaitRounds}). ${this.dCount} deleted.`); await Core.sleep(1000); }
+                        while (s > 0) { s--; this.info(`Timeline stopped loading. Retrying in ${Core.fmtDuration(s)} (stalled ${Math.round((waitRounds * waitSeconds) / 60)}m of 60m). ${this.dCount} deleted.`); await Core.sleep(1000); }
                         emptyScans = 0;
                     }
                     await Core.sleep(6000); continue;
@@ -703,7 +764,7 @@
                     window.scrollTo(0, document.body.scrollHeight);
                 }
                 if (stuckCount >= 20) {
-                    this.info(`Stopped: the same post stayed on top for 20 passes (likely an X rate limit). Wait 10-15 minutes, reload the page, and run again. ${this.dCount} deleted.`);
+                    this.info(`Stopped: the same post stayed on top for 20 passes (likely an X rate limit). Wait 10-15 minutes, then press Resume above. ${this.dCount} deleted.`);
                     return;
                 }
 
@@ -748,7 +809,11 @@
                             confirmation.click();
                         }
                     }
-                    this.dCount++; this.updateProgressBar(); await this.maybePause();
+                    this.dCount++; pageDeletes++;
+                    session.deleted = this.dCount;
+                    session.staleReloads = 0;
+                    Core.store.set(this.slowSessionKey, session);
+                    this.updateProgressBar(); await this.maybePause();
                     consecutiveErrors = 0;
                     if (this.dCount % 100 === 0) console.log(`${new Date().toUTCString()} Deleted ${this.dCount} Tweets`);
                 } catch (error) {
@@ -763,6 +828,14 @@
                     }
                 }
             }
-            this.info(`Finished. Total deleted: ${this.dCount} Tweets.${exitReason ? ` Stopped early: ${exitReason}. Wait 10-15 minutes, reload the page, and run again to continue.` : ''} Reload to confirm.`);
+            if (!exitReason) {
+                endSession();
+                this.info(`Finished. Total deleted: ${this.dCount} Tweets. Reload to confirm.`);
+            } else if (exitReason.includes('fully deleted')) {
+                endSession();
+                this.info(`Finished. Total deleted: ${this.dCount} Tweets. ${exitReason}. Reload to confirm.`);
+            } else {
+                this.info(`Stopped early: ${exitReason}. ${this.dCount} deleted so far. Wait 10-15 minutes, then press Resume above.`);
+            }
         }
     };

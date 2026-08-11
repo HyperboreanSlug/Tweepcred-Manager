@@ -30,4 +30,4 @@ Auto-pause default **190 actions / 15 min**. Honors `x-rate-limit-*` headers and
 - `TweetResultByRestId` for live like counts may need manual query-id refresh (see README).
 - Slow delete honors the spare-recent-N-days filter via `tweetDate()` (DOM `<time>` tag, snowflake permalink fallback). Unknown dates are spared, never deleted.
 - Slow delete has a stuck watchdog: same top post for 20 passes => one recovery (Escape + scroll), then a clean stop with guidance. Guards against silent delete refusals and wrong-page runs.
-- When X stops loading the timeline (its own rate limit), slow delete waits 5 minutes and retries, up to 5 wait rounds, before concluding the list is exhausted.
+- When X stops loading the timeline (rate limit or an out-of-memory wedge), slow delete waits in 5-minute rounds. After 60 minutes of dead timeline it reloads the page and offers a one-click Resume (session persisted in localStorage). Only after two consecutive reload lifetimes with zero deletions does it conclude the list is exhausted.
