@@ -660,6 +660,9 @@
             const maxEmptyScans = 12;
             let stuckCount = 0, lastTopId = '';
             let exitReason = '';
+            let waitRounds = 0;
+            const maxWaitRounds = 3;
+            const waitSeconds = 300;
 
             while (true) {
                 await Core.sleep(1200);
@@ -671,12 +674,20 @@
                     if (retry) retry.click();
                     window.scrollTo(0, document.body.scrollHeight);
                     if (++emptyScans >= maxEmptyScans) {
-                        exitReason = 'X stopped loading more tweets — usually a temporary rate limit on the timeline, or the end of the list';
-                        break;
+                        if (waitRounds >= maxWaitRounds) {
+                            exitReason = `the timeline stayed empty through ${maxWaitRounds} wait rounds — likely the end of the list`;
+                            break;
+                        }
+                        // X rate-limits the timeline itself during bulk deletes.
+                        // Wait it out, then keep trying instead of quitting.
+                        waitRounds++;
+                        let s = waitSeconds;
+                        while (s > 0) { s--; this.info(`Timeline stopped loading. Retrying in ${Core.fmtDuration(s)} (wait ${waitRounds}/${maxWaitRounds}). ${this.dCount} deleted.`); await Core.sleep(1000); }
+                        emptyScans = 0;
                     }
                     await Core.sleep(6000); continue;
                 }
-                emptyScans = 0;
+                emptyScans = 0; waitRounds = 0;
 
                 const caretEl = document.querySelector(more);
                 const tweetEl = caretEl ? caretEl.closest('[data-testid="tweet"]') : document.querySelector('[data-testid="tweet"]');
