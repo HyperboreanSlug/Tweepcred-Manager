@@ -29,3 +29,4 @@ Auto-pause default **190 actions / 15 min**. Honors `x-rate-limit-*` headers and
 - GraphQL operation ids rotate; deletion uses resolve + fallbacks.
 - `TweetResultByRestId` for live like counts may need manual query-id refresh (see README).
 - Slow delete honors the spare-recent-N-days filter via `tweetDate()` (DOM `<time>` tag, snowflake permalink fallback). Unknown dates are spared, never deleted.
+- Slow delete has a stuck watchdog: same top post for 20 passes => one recovery (Escape + scroll), then a clean stop with guidance. Guards against silent delete refusals and wrong-page runs.

@@ -573,8 +573,13 @@
             const dt = tweetEl.querySelector('time[datetime]')?.getAttribute('datetime');
             const t = dt ? Date.parse(dt) : NaN;
             if (!isNaN(t)) return new Date(t);
-            const m = (tweetEl.querySelector('a[href*="/status/"]')?.getAttribute('href') || '').match(/status\/(\d+)/);
-            return m ? Core.snowflakeToDate(m[1]) : null;
+            const id = this.tweetStatusId(tweetEl);
+            return id ? Core.snowflakeToDate(id) : null;
+        },
+
+        tweetStatusId(tweetEl) {
+            const m = (tweetEl?.querySelector('a[href*="/status/"]')?.getAttribute('href') || '').match(/status\/(\d+)/);
+            return m ? m[1] : null;
         },
 
         async slowDelete() {
@@ -593,11 +598,19 @@
             if (list[1]) list[1].click();
             await Core.sleep(2000);
 
+            // Guard against running on the wrong timeline (e.g. the infinite home
+            // feed): slow delete only makes sense on your own profile page.
+            if (Core.username && !location.pathname.toLowerCase().includes(`/${Core.username.toLowerCase()}`)) {
+                this.info('Slow delete needs your profile page. Open your profile and start again.');
+                return;
+            }
+
             let consecutiveErrors = 0;
             const maxConsecutiveErrors = 8;
             const more = '[data-testid="tweet"] [data-testid="caret"]';
             let emptyScans = 0;
             const maxEmptyScans = 12;
+            let stuckCount = 0, lastTopId = '';
 
             while (true) {
                 await Core.sleep(1200);
@@ -616,6 +629,21 @@
                 const caretEl = document.querySelector(more);
                 const tweetEl = caretEl ? caretEl.closest('[data-testid="tweet"]') : document.querySelector('[data-testid="tweet"]');
 
+                // Hang watchdog: if the same post sits on top for too many passes,
+                // nothing advances (X silently refusing deletes, or a re-rendered
+                // row). Try one recovery, then stop cleanly instead of spinning.
+                const topId = this.tweetStatusId(tweetEl) || '';
+                if (topId && topId === lastTopId) stuckCount++;
+                else { stuckCount = 0; lastTopId = topId; }
+                if (stuckCount === 10) {
+                    document.body.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+                    window.scrollTo(0, document.body.scrollHeight);
+                }
+                if (stuckCount >= 20) {
+                    this.info(`Stopped: the same post stayed on top for 20 passes (likely an X rate limit). Wait 10-15 minutes, reload the page, and run again. ${this.dCount} deleted.`);
+                    return;
+                }
+
                 if (tweetEl && Core.username) {
                     const author = this.tweetAuthorHandle(tweetEl);
                     if (author && author !== Core.username.toLowerCase()) { tweetEl.remove(); continue; }
@@ -623,7 +651,7 @@
                 if (tweetEl && skipDays > 0) {
                     const date = this.tweetDate(tweetEl);
                     // Unknown date => spare it; deleting on a guess is irreversible.
-                    if (!date || date.getTime() > cutoff) { this.sparedCount++; if (this.total > 0) this.total--; tweetEl.remove(); continue; }
+                    if (!date || date.getTime() > cutoff) { this.sparedCount++; if (this.total > 0) this.total--; tweetEl.remove(); this.updateProgressBar(); continue; }
                 }
                 if (tweetEl && this.spareThreshold > 0) {
                     const likes = this.likesFromTweetElement(tweetEl);
@@ -648,7 +676,8 @@
                         if (!menu) throw new Error('tweet menu did not open');
                         if (menu.textContent.includes('@')) {
                             caret.click();
-                            const notMine = document.querySelector('[data-testid="tweet"]'); if (notMine) notMine.remove();
+                            const notMine = moreElement.closest('[data-testid="tweet"]') || document.querySelector('[data-testid="tweet"]');
+                            if (notMine) notMine.remove();
                         } else {
                             menu.click();
                             const confirmation = await Core.waitForElem('[data-testid="confirmationSheetConfirm"]');
