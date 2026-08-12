@@ -23,6 +23,9 @@
               <input id="tpm-ab-min" type="number" class="tpm-input" min="0" value="${s.get('ab.min', 10)}" style="max-width:120px">
               <label class="tpm-check"><input type="checkbox" id="tpm-ab-avatar" ${s.get('ab.avatar', true) ? 'checked' : ''}> Default profile picture</label>
               <label class="tpm-check"><input type="checkbox" id="tpm-ab-handle" ${s.get('ab.handle', true) ? 'checked' : ''}> Random / bot-like @handle</label>
+              <label class="tpm-check"><input type="checkbox" id="tpm-ab-bio" ${s.get('ab.bio', true) ? 'checked' : ''}> Empty bio</label>
+              <label class="tpm-check"><input type="checkbox" id="tpm-ab-joinon" ${s.get('ab.joinon', true) ? 'checked' : ''}> Joined within the last N months</label>
+              <input id="tpm-ab-joinmonths" type="number" class="tpm-input" min="1" value="${s.get('ab.joinmonths', 12)}" style="max-width:120px">
               <div class="tpm-btns">
                 <button class="tpm-btn tpm-btn-primary" id="tpm-ab-scan" type="button">Scan followers</button>
                 <button class="tpm-btn tpm-btn-ghost" id="tpm-ab-load" type="button">Load previous scan</button>
@@ -47,10 +50,14 @@
                 minOn: UI.el('tpm-ab-minon').checked,
                 min: parseInt(UI.el('tpm-ab-min').value, 10) || 0,
                 avatar: UI.el('tpm-ab-avatar').checked,
-                handle: UI.el('tpm-ab-handle').checked
+                handle: UI.el('tpm-ab-handle').checked,
+                emptyBio: UI.el('tpm-ab-bio').checked,
+                joinOn: UI.el('tpm-ab-joinon').checked,
+                joinMonths: parseInt(UI.el('tpm-ab-joinmonths').value, 10) || 12
             };
             s.set('ab.private', f.private); s.set('ab.minon', f.minOn); s.set('ab.min', f.min);
             s.set('ab.avatar', f.avatar); s.set('ab.handle', f.handle);
+            s.set('ab.bio', f.emptyBio); s.set('ab.joinon', f.joinOn); s.set('ab.joinmonths', f.joinMonths);
             return f;
         },
 
@@ -77,6 +84,14 @@
             if (f.handle) {
                 const hs = this.handleSignals(row.handle);
                 checks.push(hs.length ? 'handle: ' + hs.join(', ') : null);
+            }
+            // Empty bio: only matches when we actually have bio data ('' = empty).
+            if (f.emptyBio) checks.push((row.bio != null && String(row.bio).trim() === '') ? 'empty bio' : null);
+            // Recent join: account created within the last N months.
+            if (f.joinOn && f.joinMonths > 0) {
+                const age = row.createdAt ? Date.now() - new Date(row.createdAt).getTime() : null;
+                checks.push((age != null && !isNaN(age) && age < f.joinMonths * 30.44 * 86400000)
+                    ? `joined ${Math.max(1, Math.round(age / 86400000))}d ago` : null);
             }
             // AND: a row only matches if EVERY selected filter matches it.
             // Nothing selected => nothing flagged.
@@ -155,7 +170,10 @@
                         this.rows.push({
                             handle: a.handle, name: a.name, id: a.id || null,
                             private: true, followers: a.followers ?? null,
-                            defaultImage: !!a.defaultImage, enriched: true
+                            defaultImage: !!a.defaultImage,
+                            bio: a.bio != null ? a.bio : '',
+                            createdAt: a.createdAt || null,
+                            enriched: true
                         });
                     }
                 } else {
@@ -175,6 +193,8 @@
                             private: true,
                             followers: p?.followers ?? null,
                             defaultImage: p ? !!p.defaultProfileImage : null,
+                            bio: p ? (p.description || '') : null,
+                            createdAt: p?.createdAt || null,
                             enriched: !!p
                         });
                         if (i % 10 === 0 || i === locked.length - 1) this.renderResults();
@@ -237,10 +257,12 @@
             UI.el('tpm-ab-confirm').addEventListener('change', (e) => { UI.el('tpm-ab-block').disabled = !e.target.checked || blockable.length === 0; });
             UI.el('tpm-ab-block').onclick = () => this.blockAll();
             UI.el('tpm-ab-csv').onclick = () => {
-                const header = 'handle,name,private,followers,default_profile_image,matches_all_filters,reasons';
+                const header = 'handle,name,private,followers,default_profile_image,empty_bio,created_at,matches_all_filters,reasons';
                 const lines = all.map(x => [
                     x.handle, JSON.stringify(x.name || ''), x.private ? 1 : 0,
                     x.followers ?? '', x.defaultImage == null ? '' : (x.defaultImage ? 1 : 0),
+                    x.bio != null && String(x.bio).trim() === '' ? 1 : 0,
+                    x.createdAt ? new Date(x.createdAt).toISOString() : '',
                     x.reasons.length ? 1 : 0, JSON.stringify(x.reasons.join('; '))
                 ].join(','));
                 Followers._download('tpm-antibot-scan.csv', [header, ...lines].join('\n'), 'text/csv');

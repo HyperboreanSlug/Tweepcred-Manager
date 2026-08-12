@@ -13,6 +13,8 @@ Flag and block bot-like followers. Scans the Followers page, reads locked status
 - Follower count below a configurable minimum
 - Default profile picture (`default_profile_image` from the API)
 - Random / bot-like @handle — `handleSignals()`: default `user<digits>` names, long digit runs, mostly-digit handles, word + random digits, vowel-less letter runs
+- Empty bio (only matches when bio data is available)
+- Joined within the last N months (default 12; uses `created_at`)
 
 Matching is recomputed live from the current checkboxes by `matches()`, so the table always reflects the selected filters.
 

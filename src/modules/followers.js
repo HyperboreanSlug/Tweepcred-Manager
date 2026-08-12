@@ -316,6 +316,8 @@
                         private: !!lg.protected,
                         followers: lg.followers_count ?? null,
                         defaultImage: !!lg.default_profile_image,
+                        bio: lg.description || '',
+                        createdAt: lg.created_at || null,
                         id: user.rest_id || lg.id_str || null
                     });
                     added++;
