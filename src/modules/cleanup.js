@@ -40,7 +40,7 @@
             UI.el('tpm-pane-cleanup').innerHTML = `
               <div class="tpm-section" id="tpm-slow-resume" style="display:none">
                 <h4>Slow delete session in progress</h4>
-                <p class="tpm-warn-box" style="margin:0 0 10px"><strong id="tpm-slow-resume-n">0</strong> deleted so far. If the timeline stays crashed for 60 minutes the page reloads itself to clear X's memory — resume the session here.</p>
+                <p class="tpm-warn-box" style="margin:0 0 10px"><strong id="tpm-slow-resume-n">0</strong> deleted so far. If the timeline stays crashed for 60 minutes the page reloads itself to clear X's memory — resume the session here. <strong id="tpm-slow-resume-crash"></strong></p>
                 <div class="tpm-btns">
                   <button class="tpm-btn tpm-btn-primary" id="tpm-slow-resume-go" type="button">Resume deleting</button>
                   <button class="tpm-btn tpm-btn-ghost" id="tpm-slow-resume-stop" type="button">Stop session</button>
@@ -104,6 +104,12 @@
             if (session && session.active) {
                 UI.el('tpm-slow-resume').style.display = '';
                 UI.el('tpm-slow-resume-n').textContent = (session.deleted || 0).toLocaleString();
+                // No heartbeat for 5+ minutes means the previous page died (OOM,
+                // tab closed, browser restart) — tell the user instead of implying
+                // the run is still going.
+                if (session.beat && Date.now() - session.beat > 300000) {
+                    UI.el('tpm-slow-resume-crash').textContent = 'The page appears to have crashed — resume to continue.';
+                }
             }
             UI.el('tpm-slow-resume-go').onclick = () => this.slowDelete(true);
             UI.el('tpm-slow-resume-stop').onclick = () => {
@@ -679,6 +685,23 @@
             const endSession = () => Core.store.set(this.slowSessionKey, null);
             const rb = UI.el('tpm-slow-resume'); if (rb) rb.style.display = 'none';
 
+            // X's heap can blow up mid-run ("Uncaught out of memory"). Watch for
+            // those errors so the crash clock starts at the real moment of death
+            // — a crashed-but-alive page reloads itself after 60 minutes crashed.
+            if (!this._oomWatch) {
+                this._oomWatch = (e) => {
+                    const text = String((e && (e.message || e.reason)) || '');
+                    if (!/out of memory|oom/i.test(text)) return;
+                    const cur = Core.store.get(this.slowSessionKey, null);
+                    if (cur && cur.active && !cur.crashedAt) {
+                        cur.crashedAt = Date.now();
+                        Core.store.set(this.slowSessionKey, cur);
+                    }
+                };
+                window.addEventListener('error', this._oomWatch);
+                window.addEventListener('unhandledrejection', this._oomWatch);
+            }
+
             this.readSettings();
             const skipDays = parseInt(UI.el('tpm-skipDays')?.value, 10) || 0;
             const cutoff = Date.now() - skipDays * 86400000;
@@ -711,8 +734,20 @@
             const waitSeconds = 300;
             const stallReloadAfter = 3600;   // 1h of dead timeline => reload the page
 
+            try {
             while (true) {
                 await Core.sleep(1200);
+                // Crash clock: once X has been out of memory for a full hour the
+                // page will never recover on its own — reload for a clean heap.
+                const live = Core.store.get(this.slowSessionKey, null);
+                if (live && live.crashedAt && Date.now() - live.crashedAt >= 3600000) {
+                    live.crashedAt = 0;
+                    Core.store.set(this.slowSessionKey, live);
+                    this.info('Crashed for 60 minutes — reloading the page to recover. Press Resume when it returns.');
+                    await Core.sleep(2000);
+                    location.reload();
+                    return;
+                }
                 document.querySelectorAll('section [data-testid="cellInnerDiv"]>div>div>div').forEach(x => x.remove());
                 document.querySelectorAll('section [data-testid="cellInnerDiv"]>div>div>[role="link"]').forEach(x => x.remove());
 
@@ -733,6 +768,8 @@
                                     break;
                                 }
                             } else session.staleReloads = 0;
+                            session.crashedAt = 0;
+                            session.beat = Date.now();
                             Core.store.set(this.slowSessionKey, session);
                             this.info('Timeline dead for 60 minutes — reloading the page to recover. Press Resume when it returns.');
                             await Core.sleep(2000);
@@ -742,6 +779,8 @@
                         // X rate-limits the timeline itself during bulk deletes.
                         // Wait it out, then keep trying instead of quitting.
                         waitRounds++;
+                        session.beat = Date.now();
+                        Core.store.set(this.slowSessionKey, session);
                         let s = waitSeconds;
                         while (s > 0) { s--; this.info(`Timeline stopped loading. Retrying in ${Core.fmtDuration(s)} (stalled ${Math.round((waitRounds * waitSeconds) / 60)}m of 60m). ${this.dCount} deleted.`); await Core.sleep(1000); }
                         emptyScans = 0;
@@ -812,6 +851,7 @@
                     this.dCount++; pageDeletes++;
                     session.deleted = this.dCount;
                     session.staleReloads = 0;
+                    session.beat = Date.now();
                     Core.store.set(this.slowSessionKey, session);
                     this.updateProgressBar(); await this.maybePause();
                     consecutiveErrors = 0;
@@ -836,6 +876,12 @@
                 this.info(`Finished. Total deleted: ${this.dCount} Tweets. ${exitReason}. Reload to confirm.`);
             } else {
                 this.info(`Stopped early: ${exitReason}. ${this.dCount} deleted so far. Wait 10-15 minutes, then press Resume above.`);
+            }
+            } catch (err) {
+                // OOM or DOM failure mid-run: keep the session alive so the user
+                // can resume instead of losing the place in the list.
+                console.error('[TPM] Slow delete crashed:', err);
+                this.info(`Slow delete crashed (${(err && err.message) || err}). The session is saved — press Resume above to continue.`);
             }
         }
     };
