@@ -23,8 +23,11 @@
         // so nothing is hardcoded). Filled by the passive sniffer and resolveQueryId.
         _queryIds: {},
         // operationName -> timestamp of a FAILED resolve, so unresolvable ops don't
-        // re-download every client bundle on each call (5-minute negative cache).
+        // re-download every client bundle on each call. Short TTL on purpose: at
+        // document-idle (userscript boot) X's api bundle is often still loading,
+        // so an early miss must not block lookups for long.
         _queryIdMisses: {},
+        _missTtl: 60000,
 
         init() {
             this.ct0 = this.getCookie('ct0');
@@ -91,7 +94,7 @@
         async resolveQueryId(operationName) {
             if (this._queryIds[operationName]) return this._queryIds[operationName];
             const miss = this._queryIdMisses[operationName];
-            if (miss && Date.now() - miss < 300000) return null;
+            if (miss && Date.now() - miss < this._missTtl) return null;
             const rank = (u) => (/\bapi[.\-]/.test(u) ? 3 : 0) + (/\bmain[.\-]/.test(u) ? 2 : 0) + (/endpoint/i.test(u) ? 2 : 0);
             let urls = [];
             try { urls = performance.getEntriesByType('resource').map(r => r.name); } catch (_) { }

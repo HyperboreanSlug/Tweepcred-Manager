@@ -56,6 +56,7 @@
                 <div class="tpm-btns">
                   <button class="tpm-btn tpm-btn-primary" id="tpm-d-calc" type="button">Recalculate</button>
                 </div>
+                <p id="tpm-d-status" class="tpm-note" style="margin-top:8px"></p>
               </div>
 
               <div class="tpm-section">
@@ -67,7 +68,10 @@
             UI.el('tpm-d-calc').onclick = () => this.calculate();
             UI.el('tpm-d-lookup').onclick = () => {
                 const h = (UI.el('tpm-d-handle').value || '').replace(/^@/, '').trim();
-                if (h) this.fetchProfileStats(h, true);
+                if (!h) return;
+                // Explicit user action: drop any cached resolve failure and scan fresh.
+                delete Core._queryIdMisses['UserByScreenName'];
+                this.fetchProfileStats(h, true);
             };
             ['tpm-d-followers', 'tpm-d-following', 'tpm-d-age'].forEach(id => {
                 UI.el(id).addEventListener('input', () => this.calculate());
@@ -82,6 +86,12 @@
             if (val == null || val === '') return;
             const el = UI.el(id);
             if (el && el.value.trim() === '') el.value = val;
+        },
+
+        // Visible lookup status — lookup failures must never be silent again.
+        dstatus(text) {
+            const el = UI.el('tpm-d-status');
+            if (el) el.textContent = text || '';
         },
 
         // Read what the page DOM exposes, then fetch authoritative numbers from
@@ -112,7 +122,10 @@
         // overwrites fields (used by the "Look up" button). Fails quietly.
         async fetchProfileStats(handle, force = false) {
             const screen_name = (handle || Core.username || '').replace(/^@/, '').trim();
-            if (!screen_name || Core.isReservedName(screen_name)) return;
+            if (!screen_name || Core.isReservedName(screen_name)) {
+                this.dstatus('Waiting for your X username to resolve…');
+                return;
+            }
             if (!force && (this._statsFetched || this._statsFetching)) return;
             this._statsFetching = true;
             try {
@@ -127,9 +140,18 @@
                     responsive_web_graphql_skip_user_profile_image_extensions_enabled: false,
                     responsive_web_graphql_timeline_navigation_enabled: true
                 });
-                const queryId = await Core.resolveQueryId('UserByScreenName');
+                // At userscript boot X's api bundle (which holds the query ids) is
+                // often still loading — resolve, give it a moment, resolve again.
+                let queryId = await Core.resolveQueryId('UserByScreenName');
                 if (!queryId) {
-                    console.log('[TPM] Could not resolve the UserByScreenName query id from the page bundles. Open any X profile once and retry.');
+                    this.dstatus('Still locating X’s profile lookup in the page bundles…');
+                    await Core.sleep(3000);
+                    delete Core._queryIdMisses['UserByScreenName'];
+                    queryId = await Core.resolveQueryId('UserByScreenName');
+                }
+                if (!queryId) {
+                    this.dstatus('Could not resolve X’s profile lookup yet. Open any X profile once, then press Look up.');
+                    console.log('[TPM] Could not resolve the UserByScreenName query id from the page bundles.');
                     return;
                 }
                 const url = `${Core.baseUrl}/i/api/graphql/${queryId}/UserByScreenName?` + new URLSearchParams({ variables, features });
@@ -141,12 +163,13 @@
                 if (res.status !== 200) {
                     // A stale sniffed/cached id can 404; drop it so the next try re-resolves.
                     if (res.status === 404) { delete Core._queryIds['UserByScreenName']; delete Core._queryIdMisses['UserByScreenName']; }
+                    this.dstatus(`Profile fetch failed (HTTP ${res.status}) for @${screen_name}.${res.status === 404 ? ' The lookup id rotated — retry in a moment.' : ''}`);
                     console.log(`[TPM] Profile fetch failed (HTTP ${res.status}) for @${screen_name}.`);
                     return;
                 }
                 const result = (await res.json())?.data?.user?.result;
                 const lg = result?.legacy;
-                if (!lg) return;
+                if (!lg) { this.dstatus(`X returned no profile data for @${screen_name} (suspended, protected, or renamed?).`); return; }
                 const set = (id, v) => { const el = UI.el(id); if (el && v != null) el.value = v; };
                 const fill = force ? set : ((id, v) => this.setIfEmpty(id, v));
                 fill('tpm-d-followers', lg.followers_count);
@@ -158,9 +181,11 @@
                 // The 2023 mass formula's isVerified is LEGACY verification only
                 // (safety.verified), NOT X Premium / blue. Reproduce that exactly.
                 UI.el('tpm-d-verified').checked = !!lg.verified;
+                this.dstatus('');
                 if (!force) this._statsFetched = true;
                 this.calculate();
             } catch (e) {
+                this.dstatus(`Profile fetch error: ${(e && e.message) || e}`);
                 console.log('[TPM] Profile fetch error:', e);
             } finally {
                 this._statsFetching = false;
