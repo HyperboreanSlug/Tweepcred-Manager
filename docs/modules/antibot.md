@@ -18,9 +18,9 @@ Matching is recomputed live from the current checkboxes by `matches()`, so the t
 
 ## Flow
 
-1. `scan()` — requires the Followers page; reuses `Followers.collectListHandles` to walk the virtualized list, saves the full list as a follower-tracker snapshot (`source: 'antibot'`), then filters to DOM-detected **locked** accounts and runs one `Core.fetchUserByScreenName` per locked account only (~0.9–1.3s apart). Non-locked followers cost zero API calls. The enriched rows are persisted to `localStorage` (`antibotScan:<username>`).
+1. `scan()` — collects the follower list via `Followers.collectFollowersApi` (cursor-paginated GraphQL `Followers`, ~20/page): scales to 100k+ followers, works from any page, and each page already carries locked status, follower count, default-avatar flag and numeric id — no per-account lookups. If the API is unavailable it falls back to the DOM walk (`collectListHandles`, lock icon read from the list) plus one `Core.fetchUserByScreenName` per locked account. The full list is saved as a follower-tracker snapshot (`source: 'antibot'`); the enriched locked rows are persisted to `localStorage` (`antibotScan:<username>`).
 2. `loadPrevious()` — restores the last saved scan and re-applies the current filters with no API calls, so filter combinations can be explored instantly.
-3. `renderResults()` — preview table of accounts matching all selected filters (private flag, follower count, default pic, reasons) + CSV/JSON export of all looked-up rows.
+3. `renderResults()` — preview table of accounts matching all selected filters (capped at 1000 rendered rows so huge match sets can't freeze the panel; block/CSV still use every match) + CSV/JSON export of all looked-up rows.
 4. `blockAll()` — confirm-gated; POSTs `1.1/blocks/create.json` per matching account with 429 reset-wait, capped by the Stop button.
 
 ## Dependencies
@@ -31,7 +31,8 @@ Matching is recomputed live from the current checkboxes by `matches()`, so the t
 
 ## Maintenance notes
 
-- Rate limits: a 429 during enrichment waits out `x-rate-limit-reset` (visible countdown in the status line), then resumes from the same account index — the scan never loses its place. The Stop button is honored even mid-wait. Failed lookups are counted and reported in the final status.
-- List collection is patient: when X throttles the followers list, the walk clicks Retry and waits (6s × up to 6 rounds) instead of stopping at the first pause.
-- Locked detection is DOM-based (`Follow.isPrivate` on the list cells); if X changes the lock icon markup, that heuristic is the place to fix.
-- Blocking needs the numeric account id from the lookup; locked accounts whose lookup failed match filters but are not blockable (shown in the summary).
+- Scale: built for 100k+ followers. API pagination is the primary path (no DOM scroll, no per-account lookups); the `Followers` queryId is resolved at runtime via the sniffer/bundle scan. If X changes the Followers response shape, `collectFollowersApi` parsing is the place to fix; the DOM walk remains as fallback.
+- Rate limits: 429s during collection or enrichment wait out `x-rate-limit-reset` (visible countdown), then resume in place. Stop is honored mid-wait.
+- List collection (DOM fallback) is patient: when X throttles the list, the walk clicks Retry and waits (6s × up to 6 rounds) instead of stopping at the first pause.
+- Locked detection on the fallback path is DOM-based (`Follow.isPrivate`); on the API path it comes from `legacy.protected`.
+- Blocking needs the numeric account id; locked accounts without one match filters but are not blockable (shown in the summary).

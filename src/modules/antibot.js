@@ -111,52 +111,75 @@
 
         async scan() {
             if (this.running) return;
-            const path = location.pathname.toLowerCase();
-            if (!/\/(followers|verified_followers)\/?$/.test(path)) {
-                this.setStatus('pause', 'Open your Followers page first');
-                alert('Go to your profile → Followers, then run the anti-bot scan.');
-                return;
-            }
             this.readFilters();
             this.running = true; this.stopFlag = false; Followers.stopFlag = false;
             UI.el('tpm-ab-scan').disabled = true; UI.el('tpm-ab-stop').disabled = false;
             this.setStatus('run', 'Collecting followers…');
             try {
-                const accounts = await Followers.collectListHandles({ maxScrolls: 500, stagnantLimit: 6 });
+                // API pagination first — scales to 100k+ followers and already
+                // returns locked status, follower counts, avatar flag and ids
+                // (works from any page). Falls back to the DOM walk, which reads
+                // the lock icon from the list and looks up each locked account.
+                let accounts = await Followers.collectFollowersApi({
+                    onProgress: (n, waitS) => {
+                        if (this.stopFlag) return;
+                        if (waitS > 0) this.setStatus('pause', `Rate limited by X. Waiting ${Core.fmtDuration(waitS)} — ${n.toLocaleString()} followers collected. Press Stop to cancel.`);
+                        else this.setStatus('run', `Collecting followers via API… ${n.toLocaleString()} so far.`);
+                    }
+                });
+                let viaApi = Array.isArray(accounts) && accounts.length > 0;
+                if (!viaApi) {
+                    const path = location.pathname.toLowerCase();
+                    if (!/\/(followers|verified_followers)\/?$/.test(path)) {
+                        this.setStatus('pause', 'Open your Followers page first');
+                        alert('The followers API is unavailable and the fallback needs your Followers page open. Go to your profile → Followers and scan again.');
+                        return;
+                    }
+                    this.setStatus('run', 'API unavailable — collecting followers from the page…');
+                    accounts = await Followers.collectListHandles({ maxScrolls: 100000, stagnantLimit: 6 });
+                }
                 if (this.stopFlag) { this.setStatus('stop', 'Stopped'); return; }
+                if (!accounts || !accounts.length) { this.setStatus('stop', 'No followers collected.'); return; }
+
                 // Feed the full follower list into the follower tracker so every
                 // anti-bot scan doubles as a snapshot (diffable, exportable).
-                if (accounts.length) {
-                    const saved = Followers.saveSnapshot(accounts, 'antibot');
-                    if (!saved) console.warn('[TPM] Anti-bot snapshot save failed (browser storage full).');
-                }
-                // Locked status comes from the lock icon in the list — no API call.
-                // Only locked accounts get an API lookup (follower count / avatar /
-                // the numeric id that blocking needs), so request volume stays tiny.
+                const savedSnap = Followers.saveSnapshot(accounts, 'antibot');
+                if (!savedSnap) console.warn('[TPM] Anti-bot snapshot save failed (browser storage full).');
+
                 const locked = accounts.filter(a => a.private);
-                this.setStatus('run', `${locked.length} locked of ${accounts.length} followers — looking up the locked ones…`);
                 this.rows = [];
                 let failed = 0;
-                for (let i = 0; i < locked.length && !this.stopFlag; i++) {
-                    const acc = locked[i];
-                    Followers.setNow(`Anti-bot: looking up locked @${acc.handle} (${i + 1}/${locked.length})`);
-                    // On a 429 the lookup waits out the reset, then resumes from
-                    // this same index — the scan never loses its place. Stop is
-                    // honored even in the middle of the wait.
-                    const p = await Core.fetchUserByScreenName(acc.handle, (s) => {
-                        this.setStatus('pause', `Rate limited by X. Waiting ${Core.fmtDuration(s)} — resumes at locked account ${i + 1}/${locked.length}. Press Stop to cancel.`);
-                    }, () => this.stopFlag);
-                    if (!p) failed++;
-                    const row = {
-                        handle: acc.handle, name: p?.name || acc.name, id: p?.id || null,
-                        private: true,
-                        followers: p?.followers ?? null,
-                        defaultImage: p ? !!p.defaultProfileImage : null,
-                        enriched: !!p
-                    };
-                    this.rows.push(row);
-                    if (i % 10 === 0 || i === locked.length - 1) this.renderResults();
-                    await Core.sleep(900 + Core.rand(0, 400));
+                if (viaApi) {
+                    // Everything needed arrived with the list — no per-account lookups.
+                    for (const a of locked) {
+                        this.rows.push({
+                            handle: a.handle, name: a.name, id: a.id || null,
+                            private: true, followers: a.followers ?? null,
+                            defaultImage: !!a.defaultImage, enriched: true
+                        });
+                    }
+                } else {
+                    this.setStatus('run', `${locked.length} locked of ${accounts.length} followers — looking up the locked ones…`);
+                    for (let i = 0; i < locked.length && !this.stopFlag; i++) {
+                        const acc = locked[i];
+                        Followers.setNow(`Anti-bot: looking up locked @${acc.handle} (${i + 1}/${locked.length})`);
+                        // On a 429 the lookup waits out the reset, then resumes from
+                        // this same index — the scan never loses its place. Stop is
+                        // honored even in the middle of the wait.
+                        const p = await Core.fetchUserByScreenName(acc.handle, (s) => {
+                            this.setStatus('pause', `Rate limited by X. Waiting ${Core.fmtDuration(s)} — resumes at locked account ${i + 1}/${locked.length}. Press Stop to cancel.`);
+                        }, () => this.stopFlag);
+                        if (!p) failed++;
+                        this.rows.push({
+                            handle: acc.handle, name: p?.name || acc.name, id: p?.id || null,
+                            private: true,
+                            followers: p?.followers ?? null,
+                            defaultImage: p ? !!p.defaultProfileImage : null,
+                            enriched: !!p
+                        });
+                        if (i % 10 === 0 || i === locked.length - 1) this.renderResults();
+                        await Core.sleep(900 + Core.rand(0, 400));
+                    }
                 }
                 // Persist the enriched scan so "Load previous scan" can re-apply
                 // any filter combination later without new API calls.
@@ -167,7 +190,7 @@
                 this.renderResults();
                 const flagged = this.matches().filter(x => x.reasons.length).length;
                 this.setStatus(this.stopFlag ? 'stop' : 'idle',
-                    `${flagged} flagged of ${locked.length} locked (${accounts.length} scanned${failed ? `, ${failed} lookups failed` : ''})`);
+                    `${flagged} flagged of ${locked.length} locked (${accounts.length.toLocaleString()} followers collected${viaApi ? ' via API' : ''}${failed ? `, ${failed} lookups failed` : ''})`);
             } catch (e) {
                 console.error('[TPM] Anti-bot scan failed:', e);
                 this.setStatus('stop', 'Scan failed');
@@ -184,7 +207,10 @@
             const all = this.matches();
             const flagged = all.filter(x => x.reasons.length);
             const blockable = flagged.filter(x => x.id);
-            const rowsHtml = flagged.map(x => `
+            // Cap the rendered table — with huge follower lists a full table
+            // would freeze the panel. Block/CSV still use every match.
+            const shown = flagged.slice(0, 1000);
+            const rowsHtml = shown.map(x => `
               <tr>
                 <td><a href="/${Core.escapeHtml(x.handle)}" target="_blank" rel="noopener">@${Core.escapeHtml(x.handle)}</a></td>
                 <td>${x.private ? 'yes' : 'no'}</td>
@@ -194,7 +220,7 @@
               </tr>`).join('');
             host.innerHTML = `
               <div style="margin-top:10px">
-                <p><strong>${flagged.length}</strong> match all selected filters of ${this.rows.length} locked looked up${flagged.length > blockable.length ? ` (${blockable.length} blockable — the rest could not be looked up)` : ''}.</p>
+                <p><strong>${flagged.length}</strong> match all selected filters of ${this.rows.length} locked looked up${flagged.length > shown.length ? ` (showing first ${shown.length})` : ''}${flagged.length > blockable.length ? ` — ${blockable.length} blockable, the rest could not be looked up` : ''}.</p>
                 <div class="tpm-f-list" style="max-height:220px;overflow:auto">
                   <table class="tpm-f-table">
                     <thead><tr><th>Handle</th><th>Private</th><th>Followers</th><th>Default pic</th><th>Matches</th></tr></thead>

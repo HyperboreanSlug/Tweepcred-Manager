@@ -13,8 +13,10 @@
 | Member | Description |
 |--------|-------------|
 | `Followers.render()` / `onShow()` | Tab UI |
-| `Followers.snapshotFollowers()` | Scroll-collect followers → history |
-| `Followers.saveSnapshot(accounts, source)` | Shared snapshot writer (manual / antibot / import); returns save success |
+| `Followers.snapshotFollowers()` | Collect followers (API-first) → history |
+| `Followers.collectFollowersApi(opts)` | Cursor-paginated GraphQL `Followers`; scales to 100k+; returns locked/count/avatar/id per account; null if unavailable |
+| `Followers.collectFollowersBest(opts)` | API first, DOM-walk fallback; returns `{ accounts, viaApi }` |
+| `Followers.saveSnapshot(accounts, source)` | Shared snapshot writer (manual / antibot / import); quota-safe (handles-only fallback, trims oldest); returns save success |
 | `Followers.exportSnapshotCsv()` / `importSnapshotCsv()` | Latest snapshot → CSV; CSV (first column = handle) → new snapshot |
 | `Followers.diffSnapshots()` | Compare last two snapshots |
 | `Followers.scanAndSortFollowing()` | Collect + enrich + sort |
@@ -40,7 +42,7 @@
 
 ## Maintenance notes
 
-- Snapshots persist in `localStorage` (last 20, keyed per username). Sources are tagged: `manual`, `antibot` (every anti-bot scan auto-saves one), `import` (CSV).
+- Snapshots persist in `localStorage` (last 20, keyed per username). Sources are tagged: `manual`, `antibot` (every anti-bot scan auto-saves one), `import` (CSV). Quota-safe: on storage pressure the writer drops oldest snapshots, then falls back to handles-only (still diffable) — a 100k-follower snapshot's full details exceed browser storage, handles fit.
 - Virtualized lists: collection scrolls and re-queries cells; stagnant-scroll detection stops the walk. A single malformed cell is skipped (try/catch), and X's "Retry" button is clicked when the list stops growing so a throttled timeline can resume.
 - Enrichment is ~1 GraphQL call per account with ~0.9–1.3 s delay — keep max-enrich caps conservative.
 - Location column is informational only (self-reported profile field).

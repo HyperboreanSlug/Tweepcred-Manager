@@ -138,14 +138,19 @@
         },
 
         saveHistory(hist) {
-            // Keep last 20 snapshots to avoid blowing localStorage
-            return Core.store.set(this._historyKey(), hist.slice(-20));
+            // Keep last 20 snapshots; on quota pressure drop oldest until it fits.
+            let h = hist.slice(-20);
+            while (h.length) {
+                if (Core.store.set(this._historyKey(), h)) return true;
+                h = h.slice(1);
+            }
+            return false;
         },
 
         // Shared snapshot writer: manual snapshots, anti-bot scans and CSV
         // imports all feed the same tracker history. Returns save success.
         saveSnapshot(accounts, source = 'manual') {
-            const handles = accounts.map(a => a.handle.toLowerCase()).sort();
+            const handles = accounts.map(a => (a.handle || '').toLowerCase()).sort();
             const snap = {
                 at: new Date().toISOString(),
                 username: Core.username || null,
@@ -155,9 +160,19 @@
             };
             const hist = this.loadHistory();
             hist.push(snap);
-            const saved = this.saveHistory(hist);
-            if (saved) console.log(`[TPM Followers] Snapshot (${source})`, snap);
-            return saved;
+            if (this.saveHistory(hist)) {
+                console.log(`[TPM Followers] Snapshot (${source})`, snap);
+                return true;
+            }
+            // Huge list: full details won't fit in browser storage. Keep the
+            // handles only — still diffable — and retry.
+            snap.meta = null;
+            if (this.saveHistory(hist)) {
+                console.warn('[TPM] Snapshot saved handles-only (list too large for full details).');
+                return true;
+            }
+            console.warn('[TPM] Snapshot too large to save to browser storage.');
+            return false;
         },
 
         // Latest snapshot -> CSV (handle,name,mutual,private).
@@ -234,6 +249,95 @@
         },
 
         /**
+         * Collect the followers list via X's cursor-paginated Followers GraphQL
+         * endpoint. Scales to 100k+ (no DOM scroll, no per-account lookups) and
+         * returns locked status, follower count, default-avatar flag and id per
+         * account. Returns null if the endpoint is unavailable (caller falls back
+         * to the DOM walk), otherwise the collected array.
+         */
+        async collectFollowersApi(opts = {}) {
+            const onProgress = opts.onProgress || (() => { });
+            const userId = Core.userId;
+            if (!userId) return null;
+            const queryId = await Core.resolveQueryId('Followers');
+            if (!queryId) return null;
+            const features = Core.followersFeatures();
+            const seen = new Map();
+            let cursor = '';
+            let pages = 0;
+            let firstOk = false;
+            const maxPages = opts.maxPages || 8000;
+            while (pages < maxPages && !this.stopFlag) {
+                const variables = { userId: String(userId), count: 20 };
+                if (cursor) variables.cursor = cursor;
+                const url = `${Core.baseUrl}/i/api/graphql/${queryId}/Followers?` + new URLSearchParams({
+                    variables: JSON.stringify(variables), features
+                });
+                let res;
+                try {
+                    res = await fetch(url, {
+                        headers: Core.apiHeaders(), referrer: `${Core.baseUrl}/${Core.username || ''}`,
+                        referrerPolicy: 'strict-origin-when-cross-origin', method: 'GET', mode: 'cors',
+                        credentials: 'include', signal: AbortSignal.timeout(10000)
+                    });
+                } catch (e) {
+                    if (!firstOk) return null;
+                    break;
+                }
+                if (res.status === 429) {
+                    const reset = parseInt(res.headers.get('x-rate-limit-reset'), 10);
+                    let s = reset ? reset - Math.floor(Date.now() / 1000) : 60;
+                    while (s > 0 && !this.stopFlag) {
+                        onProgress(seen.size, s);
+                        await Core.sleep(1000);
+                        s = reset ? reset - Math.floor(Date.now() / 1000) : s - 1;
+                    }
+                    continue;
+                }
+                if (res.status !== 200) { if (!firstOk) return null; break; }
+                let data;
+                try { data = await res.json(); } catch (e) { if (!firstOk) return null; break; }
+                firstOk = true;
+                const entries = data?.data?.user?.result?.timeline?.timeline?.entries || [];
+                let added = 0;
+                let nextCursor = '';
+                for (const entry of entries) {
+                    const eid = entry.entryId || '';
+                    if (eid.includes('cursor-bottom')) { nextCursor = entry.content?.value || ''; continue; }
+                    const user = entry.content?.itemContent?.user_results?.result;
+                    const lg = user?.legacy;
+                    if (!lg || !lg.screen_name) continue;
+                    const key = lg.screen_name.toLowerCase();
+                    if (seen.has(key)) continue;
+                    seen.set(key, {
+                        handle: lg.screen_name,
+                        name: lg.name || lg.screen_name,
+                        mutual: false,
+                        private: !!lg.protected,
+                        followers: lg.followers_count ?? null,
+                        defaultImage: !!lg.default_profile_image,
+                        id: user.rest_id || lg.id_str || null
+                    });
+                    added++;
+                }
+                pages++;
+                onProgress(seen.size, 0);
+                if (!nextCursor || added === 0) break;
+                cursor = nextCursor;
+                await Core.sleep(600 + Core.rand(0, 400));
+            }
+            return [...seen.values()];
+        },
+
+        // Best available collector: API pagination first (huge lists), DOM walk fallback.
+        async collectFollowersBest(opts = {}) {
+            const api = await this.collectFollowersApi(opts);
+            if (Array.isArray(api) && api.length) return { accounts: api, viaApi: true };
+            const accounts = await this.collectListHandles({ maxScrolls: 100000, stagnantLimit: 6 });
+            return { accounts: accounts || [], viaApi: false };
+        },
+
+        /**
          * Walk the Followers list DOM (virtualized), collect unique handles.
          * Scrolls the page to load more rows until no growth or stop.
          */
@@ -289,23 +393,24 @@
 
         async snapshotFollowers() {
             if (this.running) return;
-            const path = location.pathname.toLowerCase();
-            if (!/\/followers\/?$/.test(path) && !/\/verified_followers\/?$/.test(path)) {
-                this.setStatus('pause', 'Open your Followers page first');
-                alert('Go to your profile → Followers, then run Snapshot again.');
-                return;
-            }
             this.running = true;
             this.stopFlag = false;
             this._setBusy(true);
             this.setStatus('run', 'Snapshotting followers…');
             try {
-                const accounts = await this.collectListHandles({ maxScrolls: 500, stagnantLimit: 6 });
+                // API pagination first (works from any page, scales to 100k+);
+                // DOM walk fallback needs the Followers page open.
+                const { accounts, viaApi } = await this.collectFollowersBest({});
+                if (this.stopFlag) { this.setStatus('stop', 'Stopped'); return; }
+                if (!accounts.length) {
+                    this.setStatus('pause', 'No followers collected — open your Followers page and retry.');
+                    return;
+                }
                 const saved = this.saveSnapshot(accounts, 'manual');
                 this.refreshSnapshotSummary();
                 this.setStatus(saved ? 'idle' : 'stop',
-                    saved ? `Saved ${accounts.length} followers` : `Collected ${accounts.length}, but SAVE FAILED (browser storage full)`);
-                this.setNow(`Snapshot saved (${accounts.length} handles). Use Diff vs previous to compare.`);
+                    saved ? `Saved ${accounts.length.toLocaleString()} followers${viaApi ? ' (API)' : ''}` : `Collected ${accounts.length.toLocaleString()}, but SAVE FAILED (browser storage full)`);
+                this.setNow(`Snapshot saved (${accounts.length.toLocaleString()} handles). Use Diff vs previous to compare.`);
             } catch (e) {
                 console.error(e);
                 this.setStatus('stop', 'Snapshot failed');
