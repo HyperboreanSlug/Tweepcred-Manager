@@ -41,6 +41,6 @@
 ## Maintenance notes
 
 - Snapshots persist in `localStorage` (last 20, keyed per username). Sources are tagged: `manual`, `antibot` (every anti-bot scan auto-saves one), `import` (CSV).
-- Virtualized lists: collection scrolls and re-queries cells; stagnant-scroll detection stops the walk.
+- Virtualized lists: collection scrolls and re-queries cells; stagnant-scroll detection stops the walk. A single malformed cell is skipped (try/catch), and X's "Retry" button is clicked when the list stops growing so a throttled timeline can resume.
 - Enrichment is ~1 GraphQL call per account with ~0.9–1.3 s delay — keep max-enrich caps conservative.
 - Location column is informational only (self-reported profile field).

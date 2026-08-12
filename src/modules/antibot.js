@@ -106,10 +106,16 @@
                 const locked = accounts.filter(a => a.private);
                 this.setStatus('run', `${locked.length} locked of ${accounts.length} followers — looking up the locked ones…`);
                 this.rows = [];
+                let failed = 0;
                 for (let i = 0; i < locked.length && !this.stopFlag; i++) {
                     const acc = locked[i];
                     Followers.setNow(`Anti-bot: looking up locked @${acc.handle} (${i + 1}/${locked.length})`);
-                    const p = await Core.fetchUserByScreenName(acc.handle);
+                    // On a 429 the lookup waits out the reset, then resumes from
+                    // this same index — the scan never loses its place.
+                    const p = await Core.fetchUserByScreenName(acc.handle, (s) => {
+                        this.setStatus('pause', `Rate limited by X. Waiting ${Core.fmtDuration(s)} — resumes at locked account ${i + 1}/${locked.length}.`);
+                    });
+                    if (!p) failed++;
                     const row = {
                         handle: acc.handle, name: p?.name || acc.name, id: p?.id || null,
                         private: true,
@@ -125,7 +131,7 @@
                 this.renderResults();
                 const flagged = this.rows.filter(r => r.reasons.length).length;
                 this.setStatus(this.stopFlag ? 'stop' : 'idle',
-                    `${flagged} flagged of ${locked.length} locked (${accounts.length} followers scanned)`);
+                    `${flagged} flagged of ${locked.length} locked (${accounts.length} scanned${failed ? `, ${failed} lookups failed` : ''})`);
             } catch (e) {
                 console.error('[TPM] Anti-bot scan failed:', e);
                 this.setStatus('stop', 'Scan failed');

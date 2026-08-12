@@ -247,21 +247,28 @@
                 const cells = document.querySelectorAll('[data-testid="UserCell"]');
                 let added = 0;
                 for (const cell of cells) {
-                    const handle = Follow.getUsername(cell);
-                    if (!handle || handle === 'unknown') continue;
-                    const key = handle.toLowerCase();
-                    if (seen.has(key)) continue;
-                    const nameEl = cell.querySelector('[dir="ltr"] span, a[role="link"] span');
-                    seen.set(key, {
-                        handle,
-                        name: (nameEl && nameEl.textContent) || handle,
-                        mutual: Follow.isMutual(cell),
-                        private: Follow.isPrivate(cell)
-                    });
-                    added++;
+                    // One malformed cell must not kill the whole walk.
+                    try {
+                        const handle = Follow.getUsername(cell);
+                        if (!handle || handle === 'unknown') continue;
+                        const key = handle.toLowerCase();
+                        if (seen.has(key)) continue;
+                        const nameEl = cell.querySelector('[dir="ltr"] span, a[role="link"] span');
+                        seen.set(key, {
+                            handle,
+                            name: (nameEl && nameEl.textContent) || handle,
+                            mutual: Follow.isMutual(cell),
+                            private: Follow.isPrivate(cell)
+                        });
+                        added++;
+                    } catch (_) { }
                 }
                 this.setNow(`Scanned ${seen.size} unique accounts… (scroll ${i + 1}/${maxScrolls})`);
                 if (added === 0) {
+                    // X shows a Retry button when it throttles the list — press it
+                    // so loading resumes instead of counting straight to the stop.
+                    const retry = Array.from(document.querySelectorAll('[role="button"], button')).find(b => /retry|try again|reload/i.test(b.textContent));
+                    if (retry) retry.click();
                     stagnant++;
                     if (stagnant >= 3) break;
                 } else {

@@ -337,9 +337,10 @@
         /**
          * Fetch a public user profile via UserByScreenName.
          * @param {string} handle screen name without @
+         * @param {Function} [onWait] called each second while waiting out a 429
          * @returns {Promise<object|null>} normalized profile or null
          */
-        async fetchUserByScreenName(handle) {
+        async fetchUserByScreenName(handle, onWait = null) {
             const screen_name = (handle || '').replace(/^@/, '').trim();
             if (!screen_name || this.isReservedName(screen_name)) return null;
             const queryId = await this.resolveQueryId('UserByScreenName');
@@ -348,36 +349,52 @@
             const features = this.userByScreenNameFeatures();
             const url = `${this.baseUrl}/i/api/graphql/${queryId}/UserByScreenName?` +
                 new URLSearchParams({ variables, features });
-            try {
-                const res = await fetch(url, {
-                    headers: this.apiHeaders(),
-                    referrer: `${this.baseUrl}/${screen_name}`,
-                    referrerPolicy: 'strict-origin-when-cross-origin',
-                    method: 'GET', mode: 'cors', credentials: 'include',
-                    signal: AbortSignal.timeout(8000)
-                });
-                if (res.status === 404) { delete this._queryIds['UserByScreenName']; delete this._queryIdMisses['UserByScreenName']; }
-                if (res.status !== 200) return null;
-                const result = (await res.json())?.data?.user?.result;
-                const lg = result?.legacy;
-                if (!lg) return null;
-                return {
-                    id: result.rest_id || lg.id_str,
-                    screenName: lg.screen_name || screen_name,
-                    name: lg.name || '',
-                    followers: lg.followers_count ?? null,
-                    following: lg.friends_count ?? null,
-                    statuses: lg.statuses_count ?? null,
-                    location: lg.location || '',
-                    description: lg.description || '',
-                    createdAt: lg.created_at || null,
-                    verified: !!lg.verified,
-                    protected: !!lg.protected,
-                    defaultProfileImage: !!lg.default_profile_image,
-                    raw: result
-                };
-            } catch (_) {
-                return null;
+            // A 429 mid-scan must not poison every later lookup: wait out the
+            // reset, then retry the SAME account — the caller's loop index never
+            // advanced, so the scan resumes exactly where it errored.
+            for (let attempt = 0; attempt < 3; attempt++) {
+                try {
+                    const res = await fetch(url, {
+                        headers: this.apiHeaders(),
+                        referrer: `${this.baseUrl}/${screen_name}`,
+                        referrerPolicy: 'strict-origin-when-cross-origin',
+                        method: 'GET', mode: 'cors', credentials: 'include',
+                        signal: AbortSignal.timeout(8000)
+                    });
+                    if (res.status === 429 && attempt < 2) {
+                        const reset = parseInt(res.headers.get('x-rate-limit-reset'), 10);
+                        let s = reset ? reset - Math.floor(Date.now() / 1000) : 60;
+                        while (s > 0) {
+                            if (onWait) onWait(s);
+                            await this.sleep(1000);
+                            s = reset ? reset - Math.floor(Date.now() / 1000) : s - 1;
+                        }
+                        continue;
+                    }
+                    if (res.status === 404) { delete this._queryIds['UserByScreenName']; delete this._queryIdMisses['UserByScreenName']; }
+                    if (res.status !== 200) return null;
+                    const result = (await res.json())?.data?.user?.result;
+                    const lg = result?.legacy;
+                    if (!lg) return null;
+                    return {
+                        id: result.rest_id || lg.id_str,
+                        screenName: lg.screen_name || screen_name,
+                        name: lg.name || '',
+                        followers: lg.followers_count ?? null,
+                        following: lg.friends_count ?? null,
+                        statuses: lg.statuses_count ?? null,
+                        location: lg.location || '',
+                        description: lg.description || '',
+                        createdAt: lg.created_at || null,
+                        verified: !!lg.verified,
+                        protected: !!lg.protected,
+                        defaultProfileImage: !!lg.default_profile_image,
+                        raw: result
+                    };
+                } catch (_) {
+                    return null;
+                }
             }
+            return null;
         }
     };

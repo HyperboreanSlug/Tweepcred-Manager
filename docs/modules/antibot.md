@@ -28,6 +28,7 @@ Flag and block bot-like followers. Scans the Followers page, reads locked status
 
 ## Maintenance notes
 
+- Rate limits: a 429 during enrichment waits out `x-rate-limit-reset` (visible countdown in the status line), then resumes from the same account index — the scan never loses its place. Failed lookups are counted and reported in the final status.
 - Locked detection is DOM-based (`Follow.isPrivate` on the list cells); if X changes the lock icon markup, that heuristic is the place to fix.
 - Blocking needs the numeric account id from the lookup; locked accounts whose lookup failed are flagged but not blockable (shown in the summary).
 - The private flag in exports comes from the list DOM heuristic OR the API `protected` field (API wins when available).
