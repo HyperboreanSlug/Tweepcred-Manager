@@ -14,6 +14,8 @@
 |--------|-------------|
 | `Followers.render()` / `onShow()` | Tab UI |
 | `Followers.snapshotFollowers()` | Scroll-collect followers → history |
+| `Followers.saveSnapshot(accounts, source)` | Shared snapshot writer (manual / antibot / import); returns save success |
+| `Followers.exportSnapshotCsv()` / `importSnapshotCsv()` | Latest snapshot → CSV; CSV (first column = handle) → new snapshot |
 | `Followers.diffSnapshots()` | Compare last two snapshots |
 | `Followers.scanAndSortFollowing()` | Collect + enrich + sort |
 | `Followers.sortRows()` | Sort in-memory rows |
@@ -38,6 +40,7 @@
 
 ## Maintenance notes
 
+- Snapshots persist in `localStorage` (last 20, keyed per username). Sources are tagged: `manual`, `antibot` (every anti-bot scan auto-saves one), `import` (CSV).
 - Virtualized lists: collection scrolls and re-queries cells; stagnant-scroll detection stops the walk.
 - Enrichment is ~1 GraphQL call per account with ~0.9–1.3 s delay — keep max-enrich caps conservative.
 - Location column is informational only (self-reported profile field).

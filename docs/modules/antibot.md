@@ -16,7 +16,7 @@ Flag and block bot-like followers. Scans the Followers page, enriches each accou
 
 ## Flow
 
-1. `scan()` — requires the Followers page; reuses `Followers.collectListHandles` to walk the virtualized list, then one `Core.fetchUserByScreenName` per account (~0.9–1.3s apart).
+1. `scan()` — requires the Followers page; reuses `Followers.collectListHandles` to walk the virtualized list, saves the full list as a follower-tracker snapshot (`source: 'antibot'`), then runs one `Core.fetchUserByScreenName` per account (~0.9–1.3s apart).
 2. `renderResults()` — flagged-only preview table (private flag, follower count, default pic, reasons) + CSV/JSON export of all rows.
 3. `blockAll()` — confirm-gated; POSTs `1.1/blocks/create.json` per flagged account with 429 reset-wait, capped by the Stop button.
 

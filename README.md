@@ -118,8 +118,9 @@ You can **look up any public handle** (or your own, auto-filled via the API), an
 **Track followers**
 
 1. Open **your profile → Followers**.
-2. Click **Snapshot followers**. The script scrolls the virtualized list and stores handles in `localStorage`.
+2. Click **Snapshot followers**. The script scrolls the virtualized list and stores handles in `localStorage` (persistent, last 20 snapshots).
 3. Later, snapshot again and click **Diff vs previous** for new vs lost followers.
+4. **Export CSV** saves the latest snapshot (handle, name, mutual, private); **Import CSV** loads a handle list (first column) as a snapshot you can diff against. Anti-bot scans also auto-save a snapshot.
 
 **Sort Following by following count**
 

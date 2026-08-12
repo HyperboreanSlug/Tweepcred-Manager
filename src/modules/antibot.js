@@ -94,6 +94,12 @@
             try {
                 const accounts = await Followers.collectListHandles({ maxScrolls: 120 });
                 if (this.stopFlag) { this.setStatus('stop', 'Stopped'); return; }
+                // Feed the full follower list into the follower tracker so every
+                // anti-bot scan doubles as a snapshot (diffable, exportable).
+                if (accounts.length) {
+                    const saved = Followers.saveSnapshot(accounts, 'antibot');
+                    if (!saved) console.warn('[TPM] Anti-bot snapshot save failed (browser storage full).');
+                }
                 this.setStatus('run', `Looking up ${accounts.length} accounts…`);
                 this.rows = [];
                 for (let i = 0; i < accounts.length && !this.stopFlag; i++) {

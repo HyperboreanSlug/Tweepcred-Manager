@@ -43,6 +43,10 @@
                   <button class="tpm-btn tpm-btn-primary" id="tpm-f-snap" type="button">Snapshot followers</button>
                   <button class="tpm-btn tpm-btn-ghost" id="tpm-f-diff" type="button">Diff vs previous</button>
                 </div>
+                <div class="tpm-btns">
+                  <button class="tpm-btn tpm-btn-ghost" id="tpm-f-export-snap" type="button">Export CSV</button>
+                  <button class="tpm-btn tpm-btn-ghost" id="tpm-f-import-snap" type="button">Import CSV</button>
+                </div>
                 <div id="tpm-f-diff-out" class="tpm-note" style="margin-top:10px"></div>
               </div>
 
@@ -92,6 +96,8 @@
             };
             UI.el('tpm-f-snap').onclick = () => this.snapshotFollowers();
             UI.el('tpm-f-diff').onclick = () => this.diffSnapshots();
+            UI.el('tpm-f-export-snap').onclick = () => this.exportSnapshotCsv();
+            UI.el('tpm-f-import-snap').onclick = () => this.importSnapshotCsv();
             UI.el('tpm-f-scan').onclick = () => this.scanAndSortFollowing();
             UI.el('tpm-f-stop').onclick = () => { this.stopFlag = true; };
             UI.el('tpm-f-export').onclick = () => this.exportCsv();
@@ -136,6 +142,75 @@
             return Core.store.set(this._historyKey(), hist.slice(-20));
         },
 
+        // Shared snapshot writer: manual snapshots, anti-bot scans and CSV
+        // imports all feed the same tracker history. Returns save success.
+        saveSnapshot(accounts, source = 'manual') {
+            const handles = accounts.map(a => a.handle.toLowerCase()).sort();
+            const snap = {
+                at: new Date().toISOString(),
+                username: Core.username || null,
+                handles,
+                meta: accounts,
+                source
+            };
+            const hist = this.loadHistory();
+            hist.push(snap);
+            const saved = this.saveHistory(hist);
+            if (saved) console.log(`[TPM Followers] Snapshot (${source})`, snap);
+            return saved;
+        },
+
+        // Latest snapshot -> CSV (handle,name,mutual,private).
+        exportSnapshotCsv() {
+            const hist = this.loadHistory();
+            const snap = hist[hist.length - 1];
+            if (!snap) { this.setNow('No snapshot to export yet.'); return; }
+            const byHandle = {};
+            (snap.meta || []).forEach(m => { if (m && m.handle) byHandle[m.handle.toLowerCase()] = m; });
+            const header = 'handle,name,mutual,private';
+            const lines = (snap.handles || []).map(h => {
+                const m = byHandle[h] || {};
+                return [h, JSON.stringify(m.name || ''), m.mutual ? 1 : 0, m.private ? 1 : 0].join(',');
+            });
+            this._download(`tpm-followers-snapshot-${(snap.at || '').slice(0, 10)}.csv`, [header, ...lines].join('\n'), 'text/csv');
+        },
+
+        // CSV (first column = handle) -> new snapshot, so imported lists can
+        // be diffed against later scans.
+        importSnapshotCsv() {
+            const input = document.createElement('input');
+            input.type = 'file';
+            input.accept = '.csv,text/csv';
+            input.onchange = () => {
+                const file = input.files && input.files[0];
+                if (!file) return;
+                const fr = new FileReader();
+                fr.onloadend = () => {
+                    try {
+                        const seen = new Set();
+                        const accounts = [];
+                        for (const line of String(fr.result).split(/\r?\n/)) {
+                            const handle = line.split(',')[0].replace(/^"|"$/g, '').replace(/^@/, '').trim().toLowerCase();
+                            if (!/^[a-z0-9_]{1,15}$/.test(handle) || seen.has(handle)) continue;
+                            seen.add(handle);
+                            accounts.push({ handle });
+                        }
+                        if (!accounts.length) { this.setNow('No valid handles found in that CSV.'); return; }
+                        const saved = this.saveSnapshot(accounts, 'import');
+                        this.refreshSnapshotSummary();
+                        this.setNow(saved
+                            ? `Imported ${accounts.length} handles as a snapshot. Use Diff vs previous to compare.`
+                            : `Imported ${accounts.length} handles, but SAVE FAILED (browser storage full).`);
+                    } catch (e) {
+                        console.error('[TPM] Snapshot import failed:', e);
+                        this.setNow('Import failed — is that a valid CSV?');
+                    }
+                };
+                fr.readAsText(file);
+            };
+            input.click();
+        },
+
         refreshSnapshotSummary() {
             const hist = this.loadHistory();
             const last = hist[hist.length - 1];
@@ -152,7 +227,8 @@
             if (w) {
                 try {
                     const d = new Date(last.at);
-                    w.textContent = d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+                    const src = last.source && last.source !== 'manual' ? ` (${last.source})` : '';
+                    w.textContent = d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' }) + src;
                 } catch (_) { w.textContent = '–'; }
             }
         },
@@ -219,21 +295,11 @@
             this.setStatus('run', 'Snapshotting followers…');
             try {
                 const accounts = await this.collectListHandles({ maxScrolls: 120 });
-                const handles = accounts.map(a => a.handle.toLowerCase()).sort();
-                const snap = {
-                    at: new Date().toISOString(),
-                    username: Core.username || null,
-                    handles,
-                    meta: accounts
-                };
-                const hist = this.loadHistory();
-                hist.push(snap);
-                const saved = this.saveHistory(hist);
+                const saved = this.saveSnapshot(accounts, 'manual');
                 this.refreshSnapshotSummary();
                 this.setStatus(saved ? 'idle' : 'stop',
-                    saved ? `Saved ${handles.length} followers` : `Collected ${handles.length}, but SAVE FAILED (browser storage full)`);
-                this.setNow(`Snapshot saved (${handles.length} handles). Use Diff vs previous to compare.`);
-                console.log('[TPM Followers] Snapshot', snap);
+                    saved ? `Saved ${accounts.length} followers` : `Collected ${accounts.length}, but SAVE FAILED (browser storage full)`);
+                this.setNow(`Snapshot saved (${accounts.length} handles). Use Diff vs previous to compare.`);
             } catch (e) {
                 console.error(e);
                 this.setStatus('stop', 'Snapshot failed');
