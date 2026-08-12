@@ -88,11 +88,13 @@ Modules share one IIFE scope (not ES imports) so the **same artifact** works as:
 3. Paste the entire contents of [`dist/tweepcred-manager.user.js`](dist/tweepcred-manager.user.js) (or [`tweepcredmanager.js`](tweepcredmanager.js)) and press **Enter**.
 4. The **Tweepcred Manager** panel appears in the top-right. Pick a tab and go.
 
-### Greasemonkey / Tampermonkey (persistent)
+### Greasemonkey / Tampermonkey (persistent — recommended for long jobs)
 
 1. Install [Violentmonkey](https://violentmonkey.github.io/), [Tampermonkey](https://www.tampermonkey.net/), [Greasemonkey](https://www.greasespot.net/), or FireMonkey.
 2. Create a new script and paste `dist/tweepcred-manager.user.js`, **or** use “Install from URL” / open the raw file if you host it.
-3. Visit x.com while logged in — the panel loads automatically at `document-idle`.
+3. Visit x.com while logged in — the panel loads automatically at `document-idle` on every page load.
+
+Why this matters for long runs: the userscript re-injects on **every** page load. Slow-delete sessions are persisted in `localStorage`, and crash recoveries (out-of-memory reloads, dead-timeline reloads) reload the page and **resume automatically** — a console paste can't survive a reload, the userscript can.
 
 Also works on mobile (Firefox + Tampermonkey on Android, Userscripts on iOS Safari).
 

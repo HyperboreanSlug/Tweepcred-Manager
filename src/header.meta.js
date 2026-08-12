@@ -1,15 +1,17 @@
 // ==UserScript==
 // @name         Tweepcred Manager
 // @namespace    https://github.com/HyperboreanSlug/Tweepcred-Manager
-// @version      1.5.0
+// @version      1.6.0
 // @description  All-in-one toolkit for managing your X.com "tweepcred" reputation: estimate score, fix follower ratio, track followers, sort following by following-count, and clean up tweets — console paste or Greasemonkey.
 // @author       HyperboreanSlug (merges TweetXer by Luca Hammer et al. + Mass Unfollow by Shayan Taherkhani)
 // @license      MIT
+// @homepage     https://github.com/HyperboreanSlug/Tweepcred-Manager
 // @match        https://x.com/*
 // @match        https://mobile.x.com/*
 // @match        https://twitter.com/*
 // @match        https://mobile.twitter.com/*
 // @icon         https://www.google.com/s2/favicons?domain=twitter.com
+// @noframes
 // @grant        none
 // @run-at       document-idle
 // ==/UserScript==

@@ -40,8 +40,11 @@ function read(p) {
   return fs.readFileSync(p, 'utf8').replace(/\r\n/g, '\n');
 }
 
-const parts = ORDER.map((p) => {
+const parts = ORDER.map((p, i) => {
   const body = read(p).trimEnd();
+  // The userscript block must be the very first thing in the file — some
+  // script managers won't parse a header that starts below other comments.
+  if (i === 0) return body + '\n';
   return '\n/* ---- ' + path.relative(root, p).replace(/\\/g, '/') + ' ---- */\n' + body + '\n';
 });
 
