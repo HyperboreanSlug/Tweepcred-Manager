@@ -340,6 +340,7 @@
                     createdAt: lg.created_at || null,
                     verified: !!lg.verified,
                     protected: !!lg.protected,
+                    defaultProfileImage: !!lg.default_profile_image,
                     raw: result
                 };
             } catch (_) {

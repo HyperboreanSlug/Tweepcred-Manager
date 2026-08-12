@@ -71,6 +71,11 @@
               </div>
 
               <div class="tpm-section">
+                <h4>Anti-bot follower cleanup</h4>
+                <div id="tpm-antibot-host"></div>
+              </div>
+
+              <div class="tpm-section">
                 <h4>Sorted results</h4>
                 <div id="tpm-f-list" class="tpm-f-list"><p class="tpm-note">Run a scan to populate this table.</p></div>
               </div>

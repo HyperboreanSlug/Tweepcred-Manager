@@ -11,6 +11,7 @@
     Unfollow.render(); Unfollow.firstShow = false; Unfollow.checkLocation();
     Cleanup.render(); Cleanup.firstShow = false;
     if (typeof Followers !== 'undefined') { Followers.render(); Followers.firstShow = false; }
+    if (typeof Antibot !== 'undefined') { Antibot.render(); }
     About.render();
     UI.switchTab('dashboard');
 
