@@ -240,6 +240,7 @@
         async collectListHandles(opts = {}) {
             const maxScrolls = opts.maxScrolls || 80;
             const settleMs = opts.settleMs || 700;
+            const stagnantLimit = opts.stagnantLimit || 6;
             const seen = new Map(); // handle -> { handle, name, mutual, private }
             let stagnant = 0;
 
@@ -264,26 +265,24 @@
                     } catch (_) { }
                 }
                 this.setNow(`Scanned ${seen.size} unique accounts… (scroll ${i + 1}/${maxScrolls})`);
+
                 if (added === 0) {
-                    // X shows a Retry button when it throttles the list — press it
-                    // so loading resumes instead of counting straight to the stop.
+                    // No new accounts: X is throttling the list (or it's the true
+                    // end). Click Retry if offered, then give it REAL time to resume
+                    // — a list rate limit lifts in tens of seconds, not two.
                     const retry = Array.from(document.querySelectorAll('[role="button"], button')).find(b => /retry|try again|reload/i.test(b.textContent));
                     if (retry) retry.click();
                     stagnant++;
-                    if (stagnant >= 3) break;
-                } else {
-                    stagnant = 0;
+                    if (stagnant >= stagnantLimit) break;
+                    this.setNow(`List paused — waiting for X to load more (${stagnant}/${stagnantLimit})…`);
+                    await Core.sleep(6000);
+                    continue;
                 }
-                // Scroll the main timeline column
-                const scroller = document.querySelector('[data-testid="primaryColumn"]') || document.scrollingElement || document.documentElement;
-                const before = window.scrollY || scroller.scrollTop || 0;
+                stagnant = 0;
+
+                // Scroll the main timeline column to load the next batch.
                 window.scrollBy(0, Math.min(window.innerHeight * 0.85, 900));
                 await Core.sleep(settleMs);
-                const after = window.scrollY || scroller.scrollTop || 0;
-                if (Math.abs(after - before) < 4 && added === 0) {
-                    stagnant++;
-                    if (stagnant >= 3) break;
-                }
             }
             return [...seen.values()];
         },
@@ -301,7 +300,7 @@
             this._setBusy(true);
             this.setStatus('run', 'Snapshotting followers…');
             try {
-                const accounts = await this.collectListHandles({ maxScrolls: 120 });
+                const accounts = await this.collectListHandles({ maxScrolls: 500, stagnantLimit: 6 });
                 const saved = this.saveSnapshot(accounts, 'manual');
                 this.refreshSnapshotSummary();
                 this.setStatus(saved ? 'idle' : 'stop',
@@ -360,7 +359,7 @@
             this._setBusy(true);
             this.setStatus('run', 'Scanning Following list…');
             try {
-                const accounts = await this.collectListHandles({ maxScrolls: 100 });
+                const accounts = await this.collectListHandles({ maxScrolls: 500, stagnantLimit: 6 });
                 if (this.stopFlag) {
                     this.setStatus('stop', 'Stopped');
                     return;
@@ -372,7 +371,7 @@
                 for (let i = 0; i < toEnrich.length && !this.stopFlag; i++) {
                     const acc = toEnrich[i];
                     this.setNow(`Looking up @${acc.handle} (${i + 1}/${toEnrich.length})`);
-                    const profile = await Core.fetchUserByScreenName(acc.handle);
+                    const profile = await Core.fetchUserByScreenName(acc.handle, null, () => this.stopFlag);
                     this.rows.push({
                         handle: acc.handle,
                         name: profile?.name || acc.name,

@@ -338,9 +338,10 @@
          * Fetch a public user profile via UserByScreenName.
          * @param {string} handle screen name without @
          * @param {Function} [onWait] called each second while waiting out a 429
+         * @param {Function} [shouldStop] polled each wait second; truthy aborts the wait
          * @returns {Promise<object|null>} normalized profile or null
          */
-        async fetchUserByScreenName(handle, onWait = null) {
+        async fetchUserByScreenName(handle, onWait = null, shouldStop = null) {
             const screen_name = (handle || '').replace(/^@/, '').trim();
             if (!screen_name || this.isReservedName(screen_name)) return null;
             const queryId = await this.resolveQueryId('UserByScreenName');
@@ -365,6 +366,8 @@
                         const reset = parseInt(res.headers.get('x-rate-limit-reset'), 10);
                         let s = reset ? reset - Math.floor(Date.now() / 1000) : 60;
                         while (s > 0) {
+                            // Stop means stop — even mid rate-limit wait.
+                            if (shouldStop && shouldStop()) return null;
                             if (onWait) onWait(s);
                             await this.sleep(1000);
                             s = reset ? reset - Math.floor(Date.now() / 1000) : s - 1;

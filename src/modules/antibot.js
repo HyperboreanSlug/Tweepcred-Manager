@@ -17,7 +17,7 @@
             if (!host) return;
             const s = Core.store;
             host.innerHTML = `
-              <p>Scans your <strong>Followers</strong> page and targets <strong>locked</strong> followers — the lock is read straight from the list (no API call). Only locked accounts get an API lookup (for follower count / default avatar), then bot-like ones are flagged. Nothing is blocked until you confirm.</p>
+              <p>Scans your <strong>Followers</strong> page and targets <strong>locked</strong> followers — the lock is read straight from the list (no API call). Only locked accounts get an API lookup. An account is shown only if it matches <strong>every</strong> selected filter. Nothing is blocked until you confirm.</p>
               <label class="tpm-check"><input type="checkbox" id="tpm-ab-private" ${s.get('ab.private', true) ? 'checked' : ''}> Private / locked profile</label>
               <label class="tpm-check"><input type="checkbox" id="tpm-ab-minon" ${s.get('ab.minon', true) ? 'checked' : ''}> Fewer followers than this minimum</label>
               <input id="tpm-ab-min" type="number" class="tpm-input" min="0" value="${s.get('ab.min', 10)}" style="max-width:120px">
@@ -25,11 +25,13 @@
               <label class="tpm-check"><input type="checkbox" id="tpm-ab-handle" ${s.get('ab.handle', true) ? 'checked' : ''}> Random / bot-like @handle</label>
               <div class="tpm-btns">
                 <button class="tpm-btn tpm-btn-primary" id="tpm-ab-scan" type="button">Scan followers</button>
+                <button class="tpm-btn tpm-btn-ghost" id="tpm-ab-load" type="button">Load previous scan</button>
                 <button class="tpm-btn tpm-btn-ghost" id="tpm-ab-stop" type="button" disabled>Stop</button>
               </div>
               <div class="tpm-status idle" id="tpm-ab-status">Idle — open your Followers page first.</div>
               <div id="tpm-ab-results"></div>`;
             UI.el('tpm-ab-scan').onclick = () => this.scan();
+            UI.el('tpm-ab-load').onclick = () => this.loadPrevious();
             UI.el('tpm-ab-stop').onclick = () => { this.stopFlag = true; Followers.stopFlag = true; };
         },
 
@@ -68,15 +70,43 @@
         },
 
         classify(row, f) {
-            const r = [];
-            if (f.private && row.private) r.push('private');
-            if (f.minOn && f.min > 0 && row.followers != null && row.followers < f.min) r.push(`only ${row.followers} followers`);
-            if (f.avatar && row.defaultImage) r.push('default avatar');
+            const checks = [];
+            if (f.private) checks.push(row.private ? 'private' : null);
+            if (f.minOn && f.min > 0) checks.push((row.followers != null && row.followers < f.min) ? `only ${row.followers} followers` : null);
+            if (f.avatar) checks.push(row.defaultImage === true ? 'default avatar' : null);
             if (f.handle) {
                 const hs = this.handleSignals(row.handle);
-                if (hs.length) r.push('handle: ' + hs.join(', '));
+                checks.push(hs.length ? 'handle: ' + hs.join(', ') : null);
             }
-            return r;
+            // AND: a row only matches if EVERY selected filter matches it.
+            // Nothing selected => nothing flagged.
+            if (!checks.length) return [];
+            return checks.every(c => c != null) ? checks : [];
+        },
+
+        // Rows decorated with match reasons under the CURRENT filters, so the
+        // table always reflects whatever the user has ticked right now.
+        matches() {
+            const f = this.readFilters();
+            return this.rows.map(row => Object.assign({}, row, { reasons: this.classify(row, f) }));
+        },
+
+        _dbKey() { return 'antibotScan:' + (Core.username || 'me').toLowerCase(); },
+
+        // Re-show the last saved scan and re-apply the current filters — no API
+        // calls, so the user can tune filters and instantly see different matches.
+        loadPrevious() {
+            if (this.running) return;
+            const db = Core.store.get(this._dbKey(), null);
+            if (!db || !db.rows || !db.rows.length) {
+                this.setStatus('pause', 'No previous scan saved yet — run a scan first.');
+                return;
+            }
+            this.rows = db.rows;
+            this.renderResults();
+            const flagged = this.matches().filter(x => x.reasons.length).length;
+            const when = db.at ? new Date(db.at).toLocaleString() : 'unknown date';
+            this.setStatus('idle', `Loaded previous scan (${when}): ${flagged} match all selected filters of ${this.rows.length} locked accounts.`);
         },
 
         async scan() {
@@ -87,12 +117,12 @@
                 alert('Go to your profile → Followers, then run the anti-bot scan.');
                 return;
             }
-            const f = this.readFilters();
+            this.readFilters();
             this.running = true; this.stopFlag = false; Followers.stopFlag = false;
             UI.el('tpm-ab-scan').disabled = true; UI.el('tpm-ab-stop').disabled = false;
             this.setStatus('run', 'Collecting followers…');
             try {
-                const accounts = await Followers.collectListHandles({ maxScrolls: 120 });
+                const accounts = await Followers.collectListHandles({ maxScrolls: 500, stagnantLimit: 6 });
                 if (this.stopFlag) { this.setStatus('stop', 'Stopped'); return; }
                 // Feed the full follower list into the follower tracker so every
                 // anti-bot scan doubles as a snapshot (diffable, exportable).
@@ -111,10 +141,11 @@
                     const acc = locked[i];
                     Followers.setNow(`Anti-bot: looking up locked @${acc.handle} (${i + 1}/${locked.length})`);
                     // On a 429 the lookup waits out the reset, then resumes from
-                    // this same index — the scan never loses its place.
+                    // this same index — the scan never loses its place. Stop is
+                    // honored even in the middle of the wait.
                     const p = await Core.fetchUserByScreenName(acc.handle, (s) => {
-                        this.setStatus('pause', `Rate limited by X. Waiting ${Core.fmtDuration(s)} — resumes at locked account ${i + 1}/${locked.length}.`);
-                    });
+                        this.setStatus('pause', `Rate limited by X. Waiting ${Core.fmtDuration(s)} — resumes at locked account ${i + 1}/${locked.length}. Press Stop to cancel.`);
+                    }, () => this.stopFlag);
                     if (!p) failed++;
                     const row = {
                         handle: acc.handle, name: p?.name || acc.name, id: p?.id || null,
@@ -123,13 +154,18 @@
                         defaultImage: p ? !!p.defaultProfileImage : null,
                         enriched: !!p
                     };
-                    row.reasons = this.classify(row, f);
                     this.rows.push(row);
                     if (i % 10 === 0 || i === locked.length - 1) this.renderResults();
                     await Core.sleep(900 + Core.rand(0, 400));
                 }
+                // Persist the enriched scan so "Load previous scan" can re-apply
+                // any filter combination later without new API calls.
+                if (this.rows.length) {
+                    const saved = Core.store.set(this._dbKey(), { at: new Date().toISOString(), rows: this.rows });
+                    if (!saved) console.warn('[TPM] Anti-bot scan DB save failed (browser storage full).');
+                }
                 this.renderResults();
-                const flagged = this.rows.filter(r => r.reasons.length).length;
+                const flagged = this.matches().filter(x => x.reasons.length).length;
                 this.setStatus(this.stopFlag ? 'stop' : 'idle',
                     `${flagged} flagged of ${locked.length} locked (${accounts.length} scanned${failed ? `, ${failed} lookups failed` : ''})`);
             } catch (e) {
@@ -145,23 +181,24 @@
             const host = UI.el('tpm-ab-results');
             if (!host) return;
             if (!this.rows.length) { host.innerHTML = ''; return; }
-            const flagged = this.rows.filter(r => r.reasons.length);
-            const blockable = flagged.filter(r => r.id);
-            const rowsHtml = flagged.map(r => `
+            const all = this.matches();
+            const flagged = all.filter(x => x.reasons.length);
+            const blockable = flagged.filter(x => x.id);
+            const rowsHtml = flagged.map(x => `
               <tr>
-                <td><a href="/${Core.escapeHtml(r.handle)}" target="_blank" rel="noopener">@${Core.escapeHtml(r.handle)}</a></td>
-                <td>${r.private ? 'yes' : 'no'}</td>
-                <td class="tpm-f-num">${r.followers != null ? r.followers.toLocaleString() : '—'}</td>
-                <td>${r.defaultImage == null ? '—' : r.defaultImage ? 'yes' : 'no'}</td>
-                <td style="color:var(--muted)">${Core.escapeHtml(r.reasons.join('; '))}</td>
+                <td><a href="/${Core.escapeHtml(x.handle)}" target="_blank" rel="noopener">@${Core.escapeHtml(x.handle)}</a></td>
+                <td>${x.private ? 'yes' : 'no'}</td>
+                <td class="tpm-f-num">${x.followers != null ? x.followers.toLocaleString() : '—'}</td>
+                <td>${x.defaultImage == null ? '—' : x.defaultImage ? 'yes' : 'no'}</td>
+                <td style="color:var(--muted)">${Core.escapeHtml(x.reasons.join('; '))}</td>
               </tr>`).join('');
             host.innerHTML = `
               <div style="margin-top:10px">
-                <p><strong>${flagged.length}</strong> flagged of ${this.rows.length} scanned${flagged.length > blockable.length ? ` (${blockable.length} blockable — the rest could not be looked up)` : ''}.</p>
+                <p><strong>${flagged.length}</strong> match all selected filters of ${this.rows.length} locked looked up${flagged.length > blockable.length ? ` (${blockable.length} blockable — the rest could not be looked up)` : ''}.</p>
                 <div class="tpm-f-list" style="max-height:220px;overflow:auto">
                   <table class="tpm-f-table">
-                    <thead><tr><th>Handle</th><th>Private</th><th>Followers</th><th>Default pic</th><th>Why flagged</th></tr></thead>
-                    <tbody>${rowsHtml || '<tr><td colspan="5">Nothing flagged.</td></tr>'}</tbody>
+                    <thead><tr><th>Handle</th><th>Private</th><th>Followers</th><th>Default pic</th><th>Matches</th></tr></thead>
+                    <tbody>${rowsHtml || '<tr><td colspan="5">Nothing matches all selected filters.</td></tr>'}</tbody>
                   </table>
                 </div>
                 <div class="tpm-btns">
@@ -169,26 +206,26 @@
                   <button class="tpm-btn tpm-btn-ghost" id="tpm-ab-json" type="button">Export JSON</button>
                 </div>
                 <label class="tpm-check"><input type="checkbox" id="tpm-ab-confirm"> I understand blocking removes these accounts from my followers.</label>
-                <div class="tpm-btns"><button class="tpm-btn tpm-btn-danger" id="tpm-ab-block" type="button" disabled>Block ${blockable.length} flagged followers</button></div>
+                <div class="tpm-btns"><button class="tpm-btn tpm-btn-danger" id="tpm-ab-block" type="button" disabled>Block ${blockable.length} matching followers</button></div>
               </div>`;
             UI.el('tpm-ab-confirm').addEventListener('change', (e) => { UI.el('tpm-ab-block').disabled = !e.target.checked || blockable.length === 0; });
             UI.el('tpm-ab-block').onclick = () => this.blockAll();
             UI.el('tpm-ab-csv').onclick = () => {
-                const header = 'handle,name,private,followers,default_profile_image,flagged,reasons';
-                const lines = this.rows.map(r => [
-                    r.handle, JSON.stringify(r.name || ''), r.private ? 1 : 0,
-                    r.followers ?? '', r.defaultImage == null ? '' : (r.defaultImage ? 1 : 0),
-                    r.reasons.length ? 1 : 0, JSON.stringify(r.reasons.join('; '))
+                const header = 'handle,name,private,followers,default_profile_image,matches_all_filters,reasons';
+                const lines = all.map(x => [
+                    x.handle, JSON.stringify(x.name || ''), x.private ? 1 : 0,
+                    x.followers ?? '', x.defaultImage == null ? '' : (x.defaultImage ? 1 : 0),
+                    x.reasons.length ? 1 : 0, JSON.stringify(x.reasons.join('; '))
                 ].join(','));
                 Followers._download('tpm-antibot-scan.csv', [header, ...lines].join('\n'), 'text/csv');
             };
             UI.el('tpm-ab-json').onclick = () => {
-                Followers._download('tpm-antibot-scan.json', JSON.stringify({ at: new Date().toISOString(), rows: this.rows }, null, 2), 'application/json');
+                Followers._download('tpm-antibot-scan.json', JSON.stringify({ at: new Date().toISOString(), rows: all }, null, 2), 'application/json');
             };
         },
 
         async blockAll() {
-            const targets = this.rows.filter(r => r.reasons.length && r.id);
+            const targets = this.matches().filter(x => x.reasons.length && x.id);
             if (!targets.length) return;
             if (!window.confirm(`Block ${targets.length} flagged followers? Blocking removes them as followers. You can only undo it by unblocking manually.`)) return;
             this.stopFlag = false;
