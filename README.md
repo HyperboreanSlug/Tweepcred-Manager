@@ -9,6 +9,11 @@
   Console paste · Greasemonkey/Tampermonkey · No API keys · Local session only
 </p>
 
+<p align="center">
+  <a href="https://raw.githubusercontent.com/HyperboreanSlug/Tweepcred-Manager/main/dist/tweepcred-manager.user.js"><strong>📥 Auto-install for Tampermonkey / Violentmonkey / Greasemonkey</strong></a><br>
+  <sub>(click the link with a userscript manager installed — it offers to install automatically, and checks for updates)</sub>
+</p>
+
 ---
 
 > **Warning: Use at your own risk.** This script automates X's web interface, which is against X's Terms of Service and **can get your account locked or banned**. It runs entirely in your browser using your own logged-in session and nothing is sent anywhere. Use conservative settings and stop if X warns you.
@@ -91,7 +96,7 @@ Modules share one IIFE scope (not ES imports) so the **same artifact** works as:
 ### Greasemonkey / Tampermonkey (persistent — recommended for long jobs)
 
 1. Install [Violentmonkey](https://violentmonkey.github.io/), [Tampermonkey](https://www.tampermonkey.net/), [Greasemonkey](https://www.greasespot.net/), or FireMonkey.
-2. Create a new script and paste `dist/tweepcred-manager.user.js`, **or** use “Install from URL” / open the raw file if you host it.
+2. Click the **auto-install link** at the top of this page — your userscript manager will offer to install it, and will pick up future updates automatically (`@updateURL`). Alternatively create a new script and paste `dist/tweepcred-manager.user.js`.
 3. Visit x.com while logged in — the panel loads automatically at `document-idle` on every page load.
 
 Why this matters for long runs: the userscript re-injects on **every** page load. Slow-delete sessions are persisted in `localStorage`, and crash recoveries (out-of-memory reloads, dead-timeline reloads) reload the page and **resume automatically** — a console paste can't survive a reload, the userscript can.

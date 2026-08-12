@@ -6,6 +6,8 @@
 // @author       HyperboreanSlug (merges TweetXer by Luca Hammer et al. + Mass Unfollow by Shayan Taherkhani)
 // @license      MIT
 // @homepage     https://github.com/HyperboreanSlug/Tweepcred-Manager
+// @downloadURL  https://raw.githubusercontent.com/HyperboreanSlug/Tweepcred-Manager/main/dist/tweepcred-manager.user.js
+// @updateURL    https://raw.githubusercontent.com/HyperboreanSlug/Tweepcred-Manager/main/dist/tweepcred-manager.user.js
 // @match        https://x.com/*
 // @match        https://mobile.x.com/*
 // @match        https://twitter.com/*
