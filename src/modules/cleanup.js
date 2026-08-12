@@ -110,8 +110,18 @@
                 if (session.beat && Date.now() - session.beat > 300000) {
                     UI.el('tpm-slow-resume-crash').textContent = 'The page appears to have crashed — resume to continue.';
                 }
+                // Crash recoveries reload with autoResume set: continue hands-free.
+                if (session.autoResume) {
+                    const onProfile = Core.username && location.pathname.toLowerCase().includes(`/${Core.username.toLowerCase()}`);
+                    if (onProfile) {
+                        this.info('Resuming slow delete session…');
+                        this.slowDelete(true);
+                    } else if (Core.username && !/^(home|i|search|messages|settings|explore|notifications|compose)$/.test(Core.username.toLowerCase())) {
+                        location.replace(`${Core.baseUrl}/${Core.username}`);
+                    }
+                }
             }
-            UI.el('tpm-slow-resume-go').onclick = () => this.slowDelete(true);
+            UI.el('tpm-slow-resume-go').onclick = () => { this.info('Resuming…'); this.slowDelete(true); };
             UI.el('tpm-slow-resume-stop').onclick = () => {
                 Core.store.set(this.slowSessionKey, null);
                 UI.el('tpm-slow-resume').style.display = 'none';
@@ -681,6 +691,8 @@
             UI.el('tpm-liveLikes').checked = !!session.liveLikes;
             UI.el('tpm-pauseEvery').value = session.pauseEvery || 190;
             UI.el('tpm-pauseMinutes').value = session.pauseMinutes || 15;
+            // autoResume is consumed here; only the crash-recovery reloads set it again.
+            session.autoResume = 0;
             Core.store.set(this.slowSessionKey, session);
             const endSession = () => Core.store.set(this.slowSessionKey, null);
             const rb = UI.el('tpm-slow-resume'); if (rb) rb.style.display = 'none';
@@ -717,9 +729,14 @@
             await Core.sleep(2000);
 
             // Guard against running on the wrong timeline (e.g. the infinite home
-            // feed): slow delete only makes sense on your own profile page.
+            // feed): slow delete only makes sense on your own profile page. If
+            // we're elsewhere, go there and auto-start instead of bailing.
             if (Core.username && !location.pathname.toLowerCase().includes(`/${Core.username.toLowerCase()}`)) {
-                this.info('Slow delete needs your profile page. Open your profile and start again.');
+                session.autoResume = 1;
+                Core.store.set(this.slowSessionKey, session);
+                this.info('Opening your profile page to start the delete…');
+                await Core.sleep(1000);
+                location.replace(`${Core.baseUrl}/${Core.username}`);
                 return;
             }
 
@@ -742,8 +759,9 @@
                 const live = Core.store.get(this.slowSessionKey, null);
                 if (live && live.crashedAt && Date.now() - live.crashedAt >= 3600000) {
                     live.crashedAt = 0;
+                    live.autoResume = 1;
                     Core.store.set(this.slowSessionKey, live);
-                    this.info('Crashed for 60 minutes — reloading the page to recover. Press Resume when it returns.');
+                    this.info('Crashed for 60 minutes — reloading the page to recover. It resumes automatically.');
                     await Core.sleep(2000);
                     location.reload();
                     return;
@@ -769,9 +787,10 @@
                                 }
                             } else session.staleReloads = 0;
                             session.crashedAt = 0;
+                            session.autoResume = 1;
                             session.beat = Date.now();
                             Core.store.set(this.slowSessionKey, session);
-                            this.info('Timeline dead for 60 minutes — reloading the page to recover. Press Resume when it returns.');
+                            this.info('Timeline dead for 60 minutes — reloading the page to recover. It resumes automatically.');
                             await Core.sleep(2000);
                             location.reload();
                             return;
