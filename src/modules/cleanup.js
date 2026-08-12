@@ -116,7 +116,7 @@
                     if (onProfile) {
                         this.info('Resuming slow delete session…');
                         this.slowDelete(true);
-                    } else if (Core.username && !/^(home|i|search|messages|settings|explore|notifications|compose)$/.test(Core.username.toLowerCase())) {
+                    } else if (Core.username && !Core.isReservedName(Core.username)) {
                         location.replace(`${Core.baseUrl}/${Core.username}`);
                     }
                 }

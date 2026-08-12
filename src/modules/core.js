@@ -32,6 +32,36 @@
             this.username = this.getUsernameFromUI();
             this.userId = this.getUserId();
             this.installQuerySniffer();
+            this.waitForUsername();
+        },
+
+        // Routes that can masquerade as a username when read from the URL.
+        isReservedName(u) {
+            return /^(home|i|search|messages|settings|explore|notifications|compose|intent|hashtag)$/i.test(u || '');
+        },
+
+        // Userscript mode boots at document-idle, before X has rendered the
+        // account UI — the URL fallback then yields "home" etc. Retry until the
+        // real username is visible so API lookups target the logged-in account.
+        waitForUsername() {
+            if (this.username && !this.isReservedName(this.username)) return;
+            let tries = 20;
+            const tick = () => {
+                const u = this.getUsernameFromUI();
+                if (u && !this.isReservedName(u)) {
+                    this.username = u;
+                    this.userId = this.getUserId();
+                    // Heal a Dashboard that already tried with the wrong name.
+                    if (typeof Dashboard !== 'undefined' && !Dashboard._statsFetched) {
+                        const h = UI.el('tpm-d-handle');
+                        if (h && this.isReservedName(h.value.replace(/^@/, ''))) h.value = '';
+                        Dashboard.autofill();
+                    }
+                    return;
+                }
+                if (--tries > 0) setTimeout(tick, 1000);
+            };
+            setTimeout(tick, 1000);
         },
 
         // Passively learn real queryIds from every GraphQL request the page (or we)
@@ -308,7 +338,7 @@
          */
         async fetchUserByScreenName(handle) {
             const screen_name = (handle || '').replace(/^@/, '').trim();
-            if (!screen_name) return null;
+            if (!screen_name || this.isReservedName(screen_name)) return null;
             const queryId = await this.resolveQueryId('UserByScreenName');
             if (!queryId) return null;
             const variables = JSON.stringify({ screen_name, withSafetyModeUserFields: true });

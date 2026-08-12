@@ -101,7 +101,7 @@
             };
             this.setIfEmpty('tpm-d-followers', grab(['/verified_followers', '/followers']));
             this.setIfEmpty('tpm-d-following', grab(['/following']));
-            if (Core.username) this.setIfEmpty('tpm-d-handle', '@' + Core.username);
+            if (Core.username && !Core.isReservedName(Core.username)) this.setIfEmpty('tpm-d-handle', '@' + Core.username);
 
             this.calculate();
             this.fetchProfileStats();
@@ -112,7 +112,7 @@
         // overwrites fields (used by the "Look up" button). Fails quietly.
         async fetchProfileStats(handle, force = false) {
             const screen_name = (handle || Core.username || '').replace(/^@/, '').trim();
-            if (!screen_name) return;
+            if (!screen_name || Core.isReservedName(screen_name)) return;
             if (!force && (this._statsFetched || this._statsFetching)) return;
             this._statsFetching = true;
             try {
