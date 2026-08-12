@@ -257,10 +257,18 @@
          */
         async collectFollowersApi(opts = {}) {
             const onProgress = opts.onProgress || (() => { });
-            const userId = Core.userId;
-            if (!userId) return null;
+            const userId = Core.userId || Core.getUserId();
+            if (!userId) {
+                console.warn('[TPM] Followers API skipped: no logged-in user id (twid cookie missing).');
+                return null;
+            }
+            // Explicit scan: force a fresh queryId resolve (ignore any cached miss).
+            delete Core._queryIdMisses['Followers'];
             const queryId = await Core.resolveQueryId('Followers');
-            if (!queryId) return null;
+            if (!queryId) {
+                console.warn('[TPM] Followers API skipped: could not resolve the Followers query id. Open your Followers page once (so X makes the call), then retry.');
+                return null;
+            }
             const features = Core.followersFeatures();
             const seen = new Map();
             let cursor = '';
@@ -268,7 +276,7 @@
             let firstOk = false;
             const maxPages = opts.maxPages || 8000;
             while (pages < maxPages && !this.stopFlag) {
-                const variables = { userId: String(userId), count: 20 };
+                const variables = { userId: String(userId), count: 20, includePromotedContent: false };
                 if (cursor) variables.cursor = cursor;
                 const url = `${Core.baseUrl}/i/api/graphql/${queryId}/Followers?` + new URLSearchParams({
                     variables: JSON.stringify(variables), features
@@ -281,6 +289,7 @@
                         credentials: 'include', signal: AbortSignal.timeout(10000)
                     });
                 } catch (e) {
+                    console.warn('[TPM] Followers request threw:', e);
                     if (!firstOk) return null;
                     break;
                 }
@@ -294,11 +303,25 @@
                     }
                     continue;
                 }
-                if (res.status !== 200) { if (!firstOk) return null; break; }
+                if (res.status !== 200) {
+                    let body = '';
+                    try { body = (await res.text()).slice(0, 300); } catch (_) { }
+                    console.warn(`[TPM] Followers HTTP ${res.status}: ${body}`);
+                    if (!firstOk) return null;
+                    break;
+                }
                 let data;
-                try { data = await res.json(); } catch (e) { if (!firstOk) return null; break; }
+                try { data = await res.json(); } catch (e) { console.warn('[TPM] Followers bad JSON:', e); if (!firstOk) return null; break; }
                 firstOk = true;
-                const entries = data?.data?.user?.result?.timeline?.timeline?.entries || [];
+                if (Array.isArray(data?.errors) && data.errors.length) {
+                    console.warn('[TPM] Followers GraphQL errors:', data.errors);
+                    break;
+                }
+                const userResult = data?.data?.user?.result;
+                const entries = userResult?.timeline?.timeline?.entries || userResult?.timeline?.entries || [];
+                if (!entries.length && pages === 0) {
+                    console.warn('[TPM] Followers page 1 had no entries — response shape:', JSON.stringify(data).slice(0, 600));
+                }
                 let added = 0;
                 let nextCursor = '';
                 for (const entry of entries) {
@@ -334,7 +357,11 @@
         // Best available collector: API pagination first (huge lists), DOM walk fallback.
         async collectFollowersBest(opts = {}) {
             const api = await this.collectFollowersApi(opts);
-            if (Array.isArray(api) && api.length) return { accounts: api, viaApi: true };
+            if (Array.isArray(api) && api.length) {
+                console.log(`[TPM] Collected ${api.length} followers via API pagination.`);
+                return { accounts: api, viaApi: true };
+            }
+            console.warn('[TPM] Followers API unavailable/empty — falling back to the DOM scroll walk (slow, caps out on large lists). See [TPM] warnings above for the cause.');
             const accounts = await this.collectListHandles({ maxScrolls: 100000, stagnantLimit: 6 });
             return { accounts: accounts || [], viaApi: false };
         },

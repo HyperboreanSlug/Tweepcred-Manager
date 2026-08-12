@@ -150,7 +150,7 @@
                         alert('The followers API is unavailable and the fallback needs your Followers page open. Go to your profile → Followers and scan again.');
                         return;
                     }
-                    this.setStatus('run', 'API unavailable — collecting followers from the page…');
+                    this.setStatus('run', 'Followers API unavailable — falling back to the slow page scroll (caps out on big lists). Open the console (F12) for the reason.');
                     accounts = await Followers.collectListHandles({ maxScrolls: 100000, stagnantLimit: 6 });
                 }
                 if (this.stopFlag) { this.setStatus('stop', 'Stopped'); return; }
