@@ -25,6 +25,8 @@
         deleteDMsOneByOne: false,
         bookmarks: [],
         bookmarksNext: '',
+        entries: [],
+        idKey: '',
         _fails: 0,
         // Slow-delete session persistence: long runs leak memory inside X's own
         // page code until the tab crashes ("out of memory"). The session is
@@ -196,13 +198,17 @@
             if (UI.el('tpm-liveLikes')?.checked) return entries;
             const spareLikes = parseInt(UI.el('tpm-spareLikes')?.value, 10) || 0;
             if (spareLikes <= 0) return entries;
-            if (!entries.length || entries[0].tweet.favorite_count === undefined) {
+            if (!entries.length || !entries.some(x => x.tweet && x.tweet.favorite_count !== undefined)) {
                 this.info('This file has no like counts. Use tweets.js to spare tweets by likes.');
                 return entries;
             }
             const before = entries.length;
-            const kept = entries.filter(x => !(parseInt(x.tweet.favorite_count, 10) > spareLikes));
-            console.log(`Sparing ${before - kept.length} tweet(s) with more than ${spareLikes} likes.`);
+            const kept = entries.filter(x => {
+                const count = x.tweet && x.tweet.favorite_count;
+                if (count === undefined || count === null) return false;
+                return !(parseInt(count, 10) > spareLikes);
+            });
+            console.log(`Sparing ${before - kept.length} tweet(s) (like count unknown or with more than ${spareLikes} likes).`);
             return kept;
         },
 
@@ -210,7 +216,7 @@
             if (UI.el('tpm-liveLikes')?.checked) return false;
             const likes = parseInt(UI.el('tpm-spareLikes')?.value, 10);
             if (isNaN(likes) || likes <= 0) return false;
-            return !json.length || json[0].tweet.favorite_count === undefined;
+            return !json.length || !json.some(x => x.tweet && x.tweet.favorite_count !== undefined);
         },
 
         promptForTweetsFile() {
@@ -309,13 +315,18 @@
                 if (filestart.includes('.tweet_headers.')) {
                     if (self.needsTweetsFileForLikes(json)) { self.promptForTweetsFile(); return; }
                     self.action = 'untweet';
-                    self.tIds = self.filterByDays(self.filterByLikes(json).map(x => x.tweet.tweet_id));
+                    self.entries = json;
+                    self.idKey = 'tweet_id';
+                    self.total = json.length;
                 } else if (filestart.includes('.tweets.') || filestart.includes('.tweet.')) {
                     self.action = 'untweet';
-                    self.tIds = self.filterByDays(self.filterByLikes(json).map(x => x.tweet.id_str));
+                    self.entries = json;
+                    self.idKey = 'id_str';
+                    self.total = json.length;
                 } else if (filestart.includes('.like.')) {
                     self.action = 'unfav';
                     self.tIds = json.map(x => x.like.tweetId);
+                    self.total = self.tIds.length;
                 } else if (filestart.includes('.direct_message_headers.') || filestart.includes('.direct_message_group_headers.') ||
                     filestart.includes('.direct_messages.') || filestart.includes('.direct_message_groups.')) {
                     self.action = 'undm';
@@ -324,6 +335,7 @@
                     } else {
                         self.tIds = json.map(c => c.dmConversation.conversationId);
                     }
+                    self.total = self.tIds.length;
                 } else {
                     self.info('File content not recognized. Use a file from the Twitter data export.');
                 }
@@ -332,8 +344,8 @@
 
                 // Parse only. Build a run closure but DON'T delete yet — wait for the
                 // explicit Start button so an irreversible action is never automatic.
-                self.readSettings();
-                self.total = self.tIds.length;
+                // The like/day filters are read again at Start, so a threshold typed
+                // in after the file loads still applies.
 
                 const labels = { untweet: 'tweets', unfav: 'likes', undm: 'DM conversations' };
                 // A run must never die silently: any throw inside the async delete
@@ -343,9 +355,14 @@
                     self.info(`Run failed: ${(err && err.message) || err}. Check the console for details.`);
                 });
                 self._pendingRun = () => {
+                    self.readSettings();
                     self.createProgressBar();
                     if (self.action === 'untweet') {
                         failGuard(self.ensureTweetCount().then(() => {
+                            // Re-apply the like/day filters now: settings may have
+                            // changed after the file loaded.
+                            self.tIds = self.filterByDays(self.filterByLikes(self.entries).map(x => x.tweet[self.idKey]));
+                            self.total = self.tIds.length;
                             const skipVal = UI.el('tpm-skipCount').value;
                             if (skipVal.length < 1) {
                                 self.skip = Math.max(0, self.total - self.TweetCount - parseInt(self.total / 20));
@@ -406,6 +423,8 @@
             this._pendingRun = null;
             this.action = '';
             this.tIds = [];
+            this.entries = [];
+            this.idKey = '';
             this.hidePreview();
             const fi = UI.el('tpm-file'); if (fi) fi.value = '';
             this.info('Cancelled. Drop a file to start over.');
@@ -526,9 +545,13 @@
                 this.tId = this.tIds.pop();
                 if (this.liveLikes && this.spareThreshold > 0) {
                     const likes = await this.getLikeCount(this.tId);
-                    if (likes !== null && likes > this.spareThreshold) {
+                    // Unknown like count (lookup failed) must spare, never delete.
+                    if (likes === null || likes > this.spareThreshold) {
                         this.sparedCount++; if (this.total > 0) this.total--;
-                        console.log(`Spared ${this.tId} (${likes} likes).`); this.updateProgressBar(); continue;
+                        console.log(likes === null
+                            ? `Spared ${this.tId} (like count unknown).`
+                            : `Spared ${this.tId} (${likes} likes).`);
+                        this.updateProgressBar(); continue;
                     }
                 }
                 await this.sendRequest(url);
