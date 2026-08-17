@@ -78,8 +78,9 @@
             // re-invoking the hardened global with that throws "Illegal
             // invocation" in Chrome, which previously broke every API call
             // (including deletion). Binding here makes the override transparent.
-            const origFetch = window.fetch.bind(window);
-            window.fetch = function (input) {
+            const origFetch = window.fetch ? window.fetch.bind(window) : null;
+            if (!origFetch) return;
+            const wrapper = function (input) {
                 try {
                     const u = typeof input === 'string' ? input : (input && input.url) || '';
                     const m = u.match(/\/i\/api\/graphql\/([^/]+)\/([^/?]+)/);
@@ -87,6 +88,13 @@
                 } catch (_) { }
                 return origFetch.apply(null, arguments);
             };
+            try {
+                window.fetch = wrapper;
+            } catch (_) {
+                // Strict user-script sandboxes (Firefox + Greasemonkey) expose
+                // fetch as read-only; assignment throws and would abort boot.
+                // Sniffing is an optimization — run without it, don't die.
+            }
         },
 
         // Resolve a queryId for an operation: use a sniffed one if seen, else scan
