@@ -1,11 +1,9 @@
 /**
  * @module blocklist
- * @description Load a CSV or archive follower list and block matching accounts
- * (same filters as Anti-bot, shared settings). @see docs/modules/blocklist.md
+ * @description Block accounts from CSV / archive / handle lists; CSVs with
+ * ids skip live checks. @see docs/modules/blocklist.md
  */
-    /* ===================================================================== *
-     *  BLOCKLIST — block from a CSV / handle list / archive follower list.  *
-     * ===================================================================== */
+    /* ==== BLOCKLIST — block from CSV / handle list / archive follower list ==== */
     const Blocklist = {
         firstShow: true,
         rows: [],
@@ -22,8 +20,7 @@
 
         setNow(text) {
             const el = UI.el('tpm-bl-now');
-            if (!el) return;
-            el.style.display = text ? 'block' : 'none'; el.textContent = text || '';
+            if (el) { el.style.display = text ? 'block' : 'none'; el.textContent = text || ''; }
         },
         render() {
             const pane = UI.el('tpm-pane-blocklist');
@@ -34,7 +31,7 @@
 
               <div class="tpm-section">
                 <h4>Load a list to block</h4>
-                <p>Drop a <strong>CSV</strong> (first column = @handle or numeric user id), a plain <strong>handle list</strong>, or your X data archive's <strong>follower.js / following.js</strong> directly. Each account is looked up once and filtered with the same criteria as the <strong>Anti-bot</strong> scan (settings are shared).</p>
+                <p>Drop a <strong>CSV</strong> (with a header), a plain <strong>handle list</strong>, or your X data archive's <strong>follower.js / following.js</strong>. A CSV with ids goes straight to blocking — no live checks. Other lists are looked up once, using the same filters as the <strong>Anti-bot</strong> scan (shared settings).</p>
                 <label class="tpm-label" for="tpm-bl-file">Follower list file</label>
                 <label id="tpm-bl-drop" for="tpm-bl-file">
                   <svg viewBox="0 0 24 24" width="30" height="30" fill="none" stroke="var(--acc)" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 16V4m0 0l-4 4m4-4l4 4"/><path d="M4 16v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2"/></svg>
@@ -81,13 +78,11 @@
             UI.el('tpm-bl-stop').onclick = () => { this.stopFlag = true; };
             ['tpm-bl-private', 'tpm-bl-minon', 'tpm-bl-avatar', 'tpm-bl-handle', 'tpm-bl-bio', 'tpm-bl-joinon'].forEach(id => UI.el(id).addEventListener('change', () => this.renderResults()));
             const drop = UI.el('tpm-bl-drop'), fi = UI.el('tpm-bl-file');
-            for (const ev of ['dragenter', 'dragover']) drop.addEventListener(ev, (e) => { e.preventDefault(); e.stopPropagation(); drop.classList.add('tpm-dragover'); });
-            for (const ev of ['dragleave', 'drop']) drop.addEventListener(ev, (e) => { e.preventDefault(); e.stopPropagation(); drop.classList.remove('tpm-dragover'); });
+            const dnd = (ev, cls) => { ev.preventDefault(); ev.stopPropagation(); drop.classList.toggle('tpm-dragover', cls); };
+            for (const ev of ['dragenter', 'dragover']) drop.addEventListener(ev, (e) => dnd(e, true));
+            for (const ev of ['dragleave', 'drop']) drop.addEventListener(ev, (e) => dnd(e, false));
             drop.addEventListener('drop', (e) => {
-                if (e.dataTransfer.files && e.dataTransfer.files.length) {
-                    fi.files = e.dataTransfer.files;
-                    this.loadFile(e.dataTransfer.files[0]);
-                }
+                if (e.dataTransfer.files && e.dataTransfer.files.length) { fi.files = e.dataTransfer.files; this.loadFile(e.dataTransfer.files[0]); }
             });
         },
 
@@ -100,14 +95,13 @@
                 handle: UI.el('tpm-bl-handle').checked, emptyBio: UI.el('tpm-bl-bio').checked,
                 joinOn: UI.el('tpm-bl-joinon').checked, joinMonths: parseInt(UI.el('tpm-bl-joinmonths').value, 10) || 12
             };
-            s.set('ab.private', f.private); s.set('ab.minon', f.minOn); s.set('ab.min', f.min);
-            s.set('ab.avatar', f.avatar); s.set('ab.handle', f.handle); s.set('ab.bio', f.emptyBio);
-            s.set('ab.joinon', f.joinOn); s.set('ab.joinmonths', f.joinMonths);
+            [['ab.private', f.private], ['ab.minon', f.minOn], ['ab.min', f.min], ['ab.avatar', f.avatar],
+             ['ab.handle', f.handle], ['ab.bio', f.emptyBio], ['ab.joinon', f.joinOn], ['ab.joinmonths', f.joinMonths]]
+                .forEach(([k, v]) => s.set(k, v));
             return f;
         },
 
-        // Parse a CSV / plain list / archive follower.js into raw entries.
-        // Returns { entries: [{handle}|{id}...], kind, count } or null.
+        // Parse CSV / plain list / archive follower.js into {handle}|{id} entries ({kind, count, header?}).
         parseEntries(text) {
             const t = String(text || '');
             const cut = t.indexOf('= ');
@@ -115,8 +109,7 @@
                 let json;
                 try { json = JSON.parse(t.slice(cut + 1)); } catch (_) { return null; }
                 const key = t.slice(0, cut).includes('.following.') ? 'following' : 'follower';
-                const seen = new Set();
-                const entries = [];
+                const seen = new Set(), entries = [];
                 for (const rec of json) {
                     const obj = rec && rec[key];
                     const id = obj && String(obj.accountId || '').trim();
@@ -124,8 +117,9 @@
                 }
                 return { entries, kind: 'archive', count: json.length };
             }
-            const seen = new Set();
-            const entries = [];
+            const parsed = (typeof CSVP !== 'undefined') ? CSVP.parse(t) : null;
+            if (parsed && parsed.entries.length) return { ...parsed, kind: 'csv', count: parsed.entries.length, header: true };
+            const seen = new Set(), entries = [];
             const headWords = new Set(['handle', 'username', 'screen_name', 'name', 'account_id', 'accountid', 'user_id', 'userid', 'id', 'private', 'mutual', 'followers', 'follower', 'following']);
             for (const line of t.split(/\r?\n/)) {
                 const cell = (line.split(',')[0] || '').replace(/^@/, '').replace(/^"|"$/g, '').trim();
@@ -146,12 +140,20 @@
             const reader = new FileReader();
             reader.onloadend = () => {
                 const parsed = this.parseEntries(reader.result);
-                if (!parsed || !parsed.entries.length) {
-                    this.setStatus('stop', 'No recognizable handles or user ids found in that file.');
-                    return;
-                }
+                if (!parsed || !parsed.entries.length) { this.setStatus('stop', 'No recognizable handles or user ids found in that file.'); return; }
                 this._pending = parsed.entries;
                 this.rows = [];
+                if (parsed.header) {
+                    // CSV with columns: build rows from the file, no live checks; preflagged rows are ready to block, rows without a user id are skipped.
+                    this.rows = parsed.entries.map(e => ({ handle: e.handle || null, id: e.id || null, name: e.name || '',
+                        private: e.private, followers: e.followers ?? null, defaultImage: null, bio: null, createdAt: null,
+                        resolved: !!e.id, local: true, prechecked: !!e.prechecked }));
+                    this._pending = [];
+                    const ready = this.rows.filter(r => r.resolved).length;
+                    this.setStatus('idle', `${this.rows.length.toLocaleString()} accounts read straight from the CSV — no live checks. ${ready.toLocaleString()} have user ids and are ready to block.`);
+                    this.renderResults();
+                    return;
+                }
                 this.setStatus('run', `${parsed.entries.length.toLocaleString()} accounts from ${parsed.kind === 'archive' ? 'the archive list' : 'the list'} — looking up profiles…`);
                 this.renderResults();
                 this.resolve();
@@ -172,23 +174,13 @@
                 const e = targets[i];
                 this.setNow(`Checking ${e.handle ? '@' + e.handle : 'account ' + e.id} (${i + 1}/${total})…`);
                 let p = null;
-                if (e.id && !e.handle) {
-                    p = await Core.fetchUserByRestId(e.id, (s) => this.setStatus('pause', `Rate limited. Waiting ${Core.fmtDuration(s)} — resumes at ${i + 1}/${total}.`), () => this.stopFlag);
-                } else if (e.handle) {
-                    p = await Core.fetchUserByScreenName(e.handle, (s) => this.setStatus('pause', `Rate limited. Waiting ${Core.fmtDuration(s)} — resumes at ${i + 1}/${total}.`), () => this.stopFlag);
-                }
+                const onWait = (sec) => this.setStatus('pause', `Rate limited. Waiting ${Core.fmtDuration(sec)} — resumes at ${i + 1}/${total}.`);
+                if (e.id && !e.handle) p = await Core.fetchUserByRestId(e.id, onWait, () => this.stopFlag);
+                else if (e.handle) p = await Core.fetchUserByScreenName(e.handle, onWait, () => this.stopFlag);
                 this.setStatus('run', `Checking ${i + 1}/${total} — ${this.rows.filter(r => r.resolved && r.private).length} confirmed private so far.`);
-                if (!p) {
-                    failed++;
-                    this.rows.push({ handle: e.handle || null, id: e.id || null, name: '', private: null, resolved: false });
-                } else {
-                    this.rows.push({
-                        handle: p.screenName || e.handle, id: p.id || e.id, name: p.name || '',
-                        private: !!p.protected, followers: p.followers ?? null,
-                        defaultImage: !!p.defaultProfileImage, bio: p.description || '',
-                        createdAt: p.createdAt || null, resolved: true
-                    });
-                }
+                if (!p) { failed++; this.rows.push({ handle: e.handle || null, id: e.id || null, name: '', private: null, resolved: false }); }
+                else { const r = { handle: p.screenName || e.handle, id: p.id || e.id, name: p.name || '', private: !!p.protected,
+                        followers: p.followers ?? null, defaultImage: !!p.defaultProfileImage, bio: p.description || '', createdAt: p.createdAt || null, resolved: true }; this.rows.push(r); }
                 if (i % 10 === 0 || i === total - 1) this.renderResults();
                 await Core.sleep(900 + Core.rand(0, 400));
             }
@@ -197,38 +189,40 @@
             this.running = false;
             const flagged = this.matches().length;
             this.renderResults();
-            const mins = (Date.now() - start) / 60000;
-            this.setStatus(this.stopFlag ? 'stop' : 'idle',
-                this.stopFlag
-                    ? `Stopped — ${flagged} match the filters of ${this.rows.length} checked (${failed} unresolvable).`
-                    : `Done in ${mins.toFixed(1)} min — ${flagged} match the filters of ${this.rows.length} checked (${failed} unresolvable).`);
+            const doneTxt = this.stopFlag ? 'Stopped' : `Done in ${((Date.now() - start) / 60000).toFixed(1)} min`;
+            this.setStatus(this.stopFlag ? 'stop' : 'idle', `${doneTxt} — ${flagged} match the filters of ${this.rows.length} checked (${failed} unresolvable).`);
+        },
+
+        // CSV rows carry no live data — evaluate only what the file itself provides.
+        localReasons(row, f) {
+            if (row.prechecked) return ['csv_prechecked'];
+            const reasons = [];
+            if (f.private && row.private === true) reasons.push('private');
+            if (f.minOn && row.followers != null && row.followers < f.min) reasons.push('followers_lt_' + f.min);
+            return reasons;
         },
 
         matches() {
             const f = this.readFilters();
             const classify = (typeof Antibot !== 'undefined') ? (r) => Antibot.classify(r, f) : (r) => r.private ? ['private'] : [];
-            return this.rows.map(row => Object.assign({}, row, { reasons: classify(row) }))
-                .filter(r => r.resolved && r.id && r.reasons.length);
+            return this.rows.map(row => Object.assign({}, row, { reasons: row.local ? this.localReasons(row, f) : classify(row) })).filter(r => r.resolved && r.id && r.reasons.length);
         },
 
         renderResults() {
             const host = UI.el('tpm-bl-results');
             if (!host) return;
-            const flagged = this.matches();
-            const unresolvable = this.rows.filter(r => !r.resolved).length;
+            const flagged = this.matches(), unresolvable = this.rows.filter(r => !r.resolved).length;
             if (!this.rows.length) { host.innerHTML = '<p class="tpm-note">Load a list to see accounts here.</p>'; return; }
             const shown = this.rows.slice(0, 1000);
             const rowsHtml = shown.map(r => `
               <tr>
                 <td>${r.handle ? '<a href="/' + Core.escapeHtml(r.handle) + '" target="_blank" rel="noopener">@' + Core.escapeHtml(r.handle) + '</a>' : Core.escapeHtml(r.id || '')}</td>
-                <td>${r.resolved
-                    ? (r.private ? '<span style="color:var(--danger)">private</span>' : '<span style="color:var(--muted)">open</span>')
-                    : '<span style="color:var(--warn)">not found</span>'}</td>
-                <td class="tpm-f-num">${r.followers != null ? r.followers.toLocaleString() : '—'}</td>
-                <td style="color:var(--muted)">${r.resolved ? Core.escapeHtml(r.reasons && r.reasons.length ? r.reasons.join('; ') : '—') : ''}</td>
+                <td>${r.resolved ? (r.private ? '<span style="color:var(--danger)">private</span>' : '<span style="color:var(--muted)">open</span>')
+                    : (r.local ? '<span style="color:var(--warn)">no user id — skipped</span>' : '<span style="color:var(--warn)">not found</span>')}</td>
+                <td class="tpm-f-num">${r.followers != null ? r.followers.toLocaleString() : '—'}</td><td style="color:var(--muted)">${r.resolved ? Core.escapeHtml(r.reasons && r.reasons.length ? r.reasons.join('; ') : '—') : ''}</td>
               </tr>`).join('');
             host.innerHTML = `
-              <p><strong>${this.rows.length.toLocaleString()}</strong> looked up · <strong>${flagged.length.toLocaleString()}</strong> match all selected filters · ${unresolvable} unresolvable${this.rows.length > shown.length ? ' (showing first ' + shown.length.toLocaleString() + ')' : ''}.</p>
+              <p><strong>${this.rows.length.toLocaleString()}</strong> ${this.rows[0] && this.rows[0].local ? 'loaded from the CSV (no live checks)' : 'looked up'} · <strong>${flagged.length.toLocaleString()}</strong> match all selected filters · ${unresolvable} ${this.rows[0] && this.rows[0].local ? 'without a user id (skipped)' : 'unresolvable'}${this.rows.length > shown.length ? ' (showing first ' + shown.length.toLocaleString() + ')' : ''}.</p>
               <div class="tpm-f-list" style="max-height:220px;overflow:auto">
                 <table class="tpm-f-table">
                   <thead><tr><th>Account</th><th>Status</th><th>Followers</th><th>Matches</th></tr></thead>
@@ -259,8 +253,7 @@
             if (!targets.length) return;
             if (!window.confirm(`Block ${targets.length.toLocaleString()} accounts? Blocking removes them as followers. You can only undo it by unblocking manually.`)) return;
             this.stopFlag = false;
-            const every = parseInt(UI.el('tpm-bl-pauseEvery')?.value, 10) || 0;
-            const mins = parseFloat(UI.el('tpm-bl-pauseMinutes')?.value) || 15;
+            const every = parseInt(UI.el('tpm-bl-pauseEvery')?.value, 10) || 0, mins = parseFloat(UI.el('tpm-bl-pauseMinutes')?.value) || 15;
             UI.el('tpm-bl-block').disabled = true;
             UI.el('tpm-bl-stop').disabled = false;
             let done = 0, failed = 0, cnt = 0;

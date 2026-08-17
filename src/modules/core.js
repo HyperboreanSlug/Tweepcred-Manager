@@ -363,6 +363,34 @@
             });
         },
 
+        // X moved UserByScreenName / UserByRestId to the nested schema
+        // (core / privacy / profile_bio / relationship_counts). Map both
+        // shapes so lookups keep working across deploy waves.
+        mapProfile(result, fallbackId) {
+            if (!result || (result.__typename && result.__typename !== 'User')) return null;
+            const core = result.core || {};
+            const lg = result.legacy || {};
+            const s = (a, b) => (a != null ? a : b);
+            const defaultProfileImage = lg.default_profile_image != null
+                ? !!lg.default_profile_image
+                : (result.avatar && result.avatar.image_url ? /default_profile/i.test(result.avatar.image_url) : false);
+            return {
+                id: s(result.rest_id, s(lg.id_str, null)) || String(fallbackId || ''),
+                screenName: s(lg.screen_name, core.screen_name) || String(fallbackId || ''),
+                name: s(lg.name, core.name) || '',
+                followers: s(lg.followers_count, result.relationship_counts?.followers) ?? null,
+                following: s(lg.friends_count, result.relationship_counts?.following) ?? null,
+                statuses: s(lg.statuses_count, result.tweet_counts?.tweets) ?? null,
+                location: s(lg.location, result.location?.location) || '',
+                description: s(lg.description, result.profile_bio?.description) || '',
+                createdAt: s(lg.created_at, core.created_at) || null,
+                verified: !!(s(lg.verified, result.verification?.verified)),
+                protected: !!(s(lg.protected, result.privacy?.protected)),
+                defaultProfileImage,
+                raw: result
+            };
+        },
+
         /**
          * Fetch a public user profile via UserByScreenName.
          * @param {string} handle screen name without @
@@ -406,23 +434,7 @@
                     if (res.status === 404) { delete this._queryIds['UserByScreenName']; delete this._queryIdMisses['UserByScreenName']; }
                     if (res.status !== 200) return null;
                     const result = (await res.json())?.data?.user?.result;
-                    const lg = result?.legacy;
-                    if (!lg) return null;
-                    return {
-                        id: result.rest_id || lg.id_str,
-                        screenName: lg.screen_name || screen_name,
-                        name: lg.name || '',
-                        followers: lg.followers_count ?? null,
-                        following: lg.friends_count ?? null,
-                        statuses: lg.statuses_count ?? null,
-                        location: lg.location || '',
-                        description: lg.description || '',
-                        createdAt: lg.created_at || null,
-                        verified: !!lg.verified,
-                        protected: !!lg.protected,
-                        defaultProfileImage: !!lg.default_profile_image,
-                        raw: result
-                    };
+                    return this.mapProfile(result, screen_name);
                 } catch (_) {
                     return null;
                 }
@@ -470,23 +482,7 @@
                     if (res.status === 404) { delete this._queryIds['UserByRestId']; delete this._queryIdMisses['UserByRestId']; }
                     if (res.status !== 200) return null;
                     const result = (await res.json())?.data?.user?.result;
-                    const lg = result?.legacy;
-                    if (!lg) return null;
-                    return {
-                        id: result.rest_id || lg.id_str || userId,
-                        screenName: lg.screen_name || userId,
-                        name: lg.name || '',
-                        followers: lg.followers_count ?? null,
-                        following: lg.friends_count ?? null,
-                        statuses: lg.statuses_count ?? null,
-                        location: lg.location || '',
-                        description: lg.description || '',
-                        createdAt: lg.created_at || null,
-                        verified: !!lg.verified,
-                        protected: !!lg.protected,
-                        defaultProfileImage: !!lg.default_profile_image,
-                        raw: result
-                    };
+                    return this.mapProfile(result, userId);
                 } catch (_) {
                     return null;
                 }
