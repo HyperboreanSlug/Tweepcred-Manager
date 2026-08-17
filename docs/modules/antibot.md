@@ -16,7 +16,7 @@ Flag and block bot-like followers. Scans the Followers page, reads locked status
 - Empty bio (only matches when bio data is available)
 - Joined within the last N months (default 12; uses `created_at`)
 
-Matching is recomputed live from the current checkboxes by `matches()`, so the table always reflects the selected filters.
+Matching is recomputed live from the current checkboxes by `matches()`, so the table always reflects the selected filters. The filter state lives in the shared `ab.*` storage keys — the **Block list** tab (module `blocklist`) uses the same checkboxes, classifier and settings.
 
 ## Flow
 

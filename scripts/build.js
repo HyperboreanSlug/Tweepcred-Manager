@@ -28,6 +28,7 @@ const ORDER = [
   path.join(modulesDir, 'cleanup.js'),
   path.join(modulesDir, 'followers.js'),
   path.join(modulesDir, 'antibot.js'),
+  path.join(modulesDir, 'blocklist.js'),
   path.join(modulesDir, 'about.js'),
   path.join(src, 'boot.js'),
   path.join(src, 'footer.js'),

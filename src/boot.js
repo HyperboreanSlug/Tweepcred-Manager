@@ -12,6 +12,7 @@
     Cleanup.render(); Cleanup.firstShow = false;
     if (typeof Followers !== 'undefined') { Followers.render(); Followers.firstShow = false; }
     if (typeof Antibot !== 'undefined') { Antibot.render(); }
+    if (typeof Blocklist !== 'undefined') { Blocklist.render(); Blocklist.firstShow = false; }
     About.render();
     UI.switchTab('dashboard');
 

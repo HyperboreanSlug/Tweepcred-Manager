@@ -19,6 +19,7 @@
                   <li><strong>Unfollow</strong> repairs your follower/following ratio — the biggest lever.</li>
                   <li><strong>Followers</strong> snapshots who follows you and sorts your Following list by following-count.</li>
                   <li><strong>Cleanup</strong> removes old, low-engagement tweets that drag down your average.</li>
+                  <li><strong>Block list</strong> loads a CSV or your data archive's follower list and blocks the private/locked accounts in it.</li>
                 </ul>
               </div>
               <div class="tpm-section">

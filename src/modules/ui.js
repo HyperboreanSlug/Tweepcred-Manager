@@ -30,6 +30,7 @@
                 <button class="tpm-tab tpm-active" data-tab="dashboard" type="button">Dashboard</button>
                 <button class="tpm-tab" data-tab="unfollow" type="button">Unfollow</button>
                 <button class="tpm-tab" data-tab="followers" type="button">Followers</button>
+                <button class="tpm-tab" data-tab="blocklist" type="button">Block list</button>
                 <button class="tpm-tab" data-tab="cleanup" type="button">Cleanup</button>
                 <button class="tpm-tab" data-tab="about" type="button">About</button>
               </nav>
@@ -37,6 +38,7 @@
                 <section class="tpm-pane tpm-active" id="tpm-pane-dashboard"></section>
                 <section class="tpm-pane" id="tpm-pane-unfollow"></section>
                 <section class="tpm-pane" id="tpm-pane-followers"></section>
+                <section class="tpm-pane" id="tpm-pane-blocklist"></section>
                 <section class="tpm-pane" id="tpm-pane-cleanup"></section>
                 <section class="tpm-pane" id="tpm-pane-about"></section>
               </div>`;
@@ -60,6 +62,7 @@
             if (name === 'dashboard') Dashboard.onShow();
             if (name === 'unfollow') Unfollow.onShow();
             if (name === 'followers' && typeof Followers !== 'undefined') Followers.onShow();
+            if (name === 'blocklist' && typeof Blocklist !== 'undefined') Blocklist.onShow();
         },
 
         makeDraggable(panel, header) {
@@ -178,10 +181,10 @@
             ${p} .tpm-now{background:rgba(29,155,240,.1);border:1px solid rgba(29,155,240,.3);border-radius:10px;padding:10px;margin:10px 0;font-size:13px;text-align:center}
             ${p} .tpm-note{font-size:12px;color:var(--muted);margin-top:10px;line-height:1.5}
             ${p} .tpm-warn-box{background:rgba(247,147,26,.12);border:1px solid rgba(247,147,26,.35);color:#ffd9a8;border-radius:10px;padding:10px 12px;font-size:13px;margin-bottom:12px}
-            ${p} #tpm-drop{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:8px;padding:22px 16px;border:2px dashed var(--border);border-radius:14px;cursor:pointer;text-align:center;color:var(--muted);background:var(--card);transition:.15s}
-            ${p} #tpm-drop:hover,${p} #tpm-drop.tpm-dragover{border-color:var(--acc);color:var(--text);background:rgba(29,155,240,.08)}
-            ${p} #tpm-drop strong{color:var(--text);font-weight:700}
-            ${p} #tpm-file{position:absolute;width:1px;height:1px;opacity:0;clip:rect(0 0 0 0)}
+            ${p} #tpm-drop,${p} #tpm-bl-drop{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:8px;padding:22px 16px;border:2px dashed var(--border);border-radius:14px;cursor:pointer;text-align:center;color:var(--muted);background:var(--card);transition:.15s}
+            ${p} #tpm-drop:hover,${p} #tpm-bl-drop:hover,${p} #tpm-drop.tpm-dragover,${p} #tpm-bl-drop.tpm-dragover{border-color:var(--acc);color:var(--text);background:rgba(29,155,240,.08)}
+            ${p} #tpm-drop strong,${p} #tpm-bl-drop strong{color:var(--text);font-weight:700}
+            ${p} #tpm-file,${p} #tpm-bl-file{position:absolute;width:1px;height:1px;opacity:0;clip:rect(0 0 0 0)}
             ${p} .tpm-pct{font-size:18px;font-weight:800;color:var(--acc)}
             ${p} .tpm-foot{margin-top:6px;text-align:center;font-size:11px;color:var(--muted)}
             /* Followers tracker table */

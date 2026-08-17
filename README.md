@@ -60,6 +60,7 @@ Slow delete drives the browser UI but calls the same `DeleteTweet` endpoint unde
 | **Dashboard** | Estimates your tweepcred from public signals and gives concrete recommendations. | Tells you what to fix first. |
 | **Unfollow** | Mass-unfollows non-followers in batches of 190 or fewer with human-like delays. Skips mutuals, private accounts and a whitelist. | **Follower/following ratio** - the single biggest factor. |
 | **Followers** | Snapshot your followers over time (diff gains/losses). Scan Following and **sort by each account's following count**. Export CSV/JSON. | Visibility into network quality / ratio planning. |
+| **Block list** | Loads a **CSV** of followers (or your data archive's `follower.js`/`following.js`) and blocks the accounts in it — **private/locked only** by default, with live profile lookups and auto-pause. | Network quality - cuts dead/locked weight. |
 | **Cleanup** | Deletes Tweets / Likes / DMs from your data export (or slow-deletes from your profile), auto-pausing at 190 to respect the rate window. | **Engagement quality** - removes dead-weight tweets. |
 
 Everything lives in one **draggable, minimizable, mobile-friendly** dark glass panel. Your settings (delays, whitelist, toggles, follower snapshots) are saved in your browser (`localStorage`).
@@ -68,7 +69,7 @@ Everything lives in one **draggable, minimizable, mobile-friendly** dark glass p
 
 | Path | Role |
 | --- | --- |
-| `src/modules/*.js` | One file per feature (`core`, `follow`, `ui`, `dashboard`, `unfollow`, `followers`, `cleanup`, `about`) |
+| `src/modules/*.js` | One file per feature (`core`, `follow`, `ui`, `dashboard`, `unfollow`, `followers`, `blocklist`, `cleanup`, `about`) |
 | `docs/modules/*.md` | Per-module maintenance docs |
 | `scripts/build.js` | Concatenates modules into a single dual-mode bundle |
 | `dist/tweepcred-manager.user.js` | Built userscript (install **or** console-paste) |
@@ -130,6 +131,18 @@ You can **look up any public handle** (or your own, auto-filled via the API), an
 4. Export **CSV** or **JSON** if needed.
 
 This tab does **not** unfollow anyone. Cap enrichment with “Max accounts” to stay gentle on rate limits. See [`docs/modules/followers.md`](docs/modules/followers.md).
+
+### Block list
+
+Blocks the accounts in a list you load — your data archive's **`follower.js` / `following.js`**, or a **CSV** whose first column is an `@handle` or a numeric user id. Handy for culling private/locked followers off an archival list.
+
+1. Open the **Block list** tab and drop the file (CSV, `.txt`, or the archive file) onto the dropzone.
+2. Each account is looked up live to check its **private / locked** status (~1/sec, reads against the rate window).
+3. The preview shows each account as **private / open / not found** and the criteria it matched. Only profiles that resolve are ever blocked.
+4. Keep the **Filters** the way your Anti-bot scan had them — the two tools share the same settings. Private/locked is on by default.
+5. Tick the confirm box, then **Block N accounts**. Auto-pause defaults to **190 / 15 min** to match the block rate window.
+
+> **Heads-up:** archives can list hundreds of thousands of followers. Cap **Max accounts to look up** (default 200) — each lookup and block counts against X's ~200 actions / 15 min limit. See [`docs/modules/blocklist.md`](docs/modules/blocklist.md).
 
 ### Unfollow
 

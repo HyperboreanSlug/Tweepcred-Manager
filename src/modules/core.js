@@ -420,5 +420,69 @@
                 }
             }
             return null;
+        },
+
+        /**
+         * Fetch a user profile by numeric id via UserByRestId. Needed when a
+         * list source (X data archive, CSV of ids) carries no screen names.
+         * @param {string} id numeric user id
+         * @param {Function} [onWait] called each second while waiting out a 429
+         * @param {Function} [shouldStop] polled each wait second; truthy aborts
+         * @returns {Promise<object|null>} normalized profile or null
+         */
+        async fetchUserByRestId(id, onWait = null, shouldStop = null) {
+            const userId = String(id || '').trim();
+            if (!userId || !/^\d{5,}$/.test(userId)) return null;
+            const queryId = await this.resolveQueryId('UserByRestId');
+            if (!queryId) return null;
+            const variables = JSON.stringify({ userId, withSafetyModeUserFields: true });
+            const features = this.userByScreenNameFeatures();
+            const url = `${this.baseUrl}/i/api/graphql/${queryId}/UserByRestId?` +
+                new URLSearchParams({ variables, features });
+            for (let attempt = 0; attempt < 3; attempt++) {
+                try {
+                    const res = await fetch(url, {
+                        headers: this.apiHeaders(),
+                        referrer: `${this.baseUrl}/${this.username || ''}`,
+                        referrerPolicy: 'strict-origin-when-cross-origin',
+                        method: 'GET', mode: 'cors', credentials: 'include',
+                        signal: AbortSignal.timeout(8000)
+                    });
+                    if (res.status === 429 && attempt < 2) {
+                        const reset = parseInt(res.headers.get('x-rate-limit-reset'), 10);
+                        let s = reset ? reset - Math.floor(Date.now() / 1000) : 60;
+                        while (s > 0) {
+                            if (shouldStop && shouldStop()) return null;
+                            if (onWait) onWait(s);
+                            await this.sleep(1000);
+                            s = reset ? reset - Math.floor(Date.now() / 1000) : s - 1;
+                        }
+                        continue;
+                    }
+                    if (res.status === 404) { delete this._queryIds['UserByRestId']; delete this._queryIdMisses['UserByRestId']; }
+                    if (res.status !== 200) return null;
+                    const result = (await res.json())?.data?.user?.result;
+                    const lg = result?.legacy;
+                    if (!lg) return null;
+                    return {
+                        id: result.rest_id || lg.id_str || userId,
+                        screenName: lg.screen_name || userId,
+                        name: lg.name || '',
+                        followers: lg.followers_count ?? null,
+                        following: lg.friends_count ?? null,
+                        statuses: lg.statuses_count ?? null,
+                        location: lg.location || '',
+                        description: lg.description || '',
+                        createdAt: lg.created_at || null,
+                        verified: !!lg.verified,
+                        protected: !!lg.protected,
+                        defaultProfileImage: !!lg.default_profile_image,
+                        raw: result
+                    };
+                } catch (_) {
+                    return null;
+                }
+            }
+            return null;
         }
     };
