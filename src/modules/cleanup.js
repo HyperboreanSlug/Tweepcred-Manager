@@ -43,7 +43,7 @@
             UI.el('tpm-pane-cleanup').innerHTML = `
               <div class="tpm-section" id="tpm-slow-resume" style="display:none">
                 <h4>Slow delete session in progress</h4>
-                <p class="tpm-warn-box" style="margin:0 0 10px"><strong id="tpm-slow-resume-n">0</strong> deleted so far. If the timeline stays crashed for 60 minutes the page reloads itself to clear X's memory — resume the session here. <strong id="tpm-slow-resume-crash"></strong></p>
+                <p class="tpm-warn-box" style="margin:0 0 10px"><strong id="tpm-slow-resume-n">0</strong> deleted so far. A blank or stuck timeline reloads itself and continues. Stop only if you want to end the session. <strong id="tpm-slow-resume-crash"></strong></p>
                 <div class="tpm-btns">
                   <button class="tpm-btn tpm-btn-primary" id="tpm-slow-resume-go" type="button">Resume deleting</button>
                   <button class="tpm-btn tpm-btn-ghost" id="tpm-slow-resume-stop" type="button">Stop session</button>
@@ -111,7 +111,7 @@
                 // tab closed, browser restart) — tell the user instead of implying
                 // the run is still going.
                 if (session.beat && Date.now() - session.beat > 300000) {
-                    UI.el('tpm-slow-resume-crash').textContent = 'The page appears to have crashed — resume to continue.';
+                    UI.el('tpm-slow-resume-crash').textContent = 'The last page died — it will auto-resume if this is a recovery reload, or press Resume.';
                 }
                 // Crash recoveries reload with autoResume set: continue hands-free.
                 if (session.autoResume) {
@@ -753,6 +753,37 @@
             });
         },
 
+        clickTimelineRetry() {
+            const btn = Array.from(document.querySelectorAll('[role="button"], button')).find(b =>
+                /retry|try again|reload|see more|show more/i.test((b.textContent || '').trim()));
+            if (btn) btn.click();
+            return !!btn;
+        },
+
+        nudgeTimelineLoad() {
+            this.clickTimelineRetry();
+            const tabs = document.querySelectorAll('[data-testid="ScrollSnap-List"] a');
+            if (tabs[1]) tabs[1].click();
+            this.scrollTimelineMore();
+        },
+
+        async forceReload(session, why) {
+            const gap = 45000;
+            const wait = (session.lastReloadAt || 0) + gap - Date.now();
+            if (wait > 0) {
+                this.info(`${why} Waiting ${Math.ceil(wait / 1000)}s so we do not reload-loop. ${this.dCount} deleted.`);
+                await Core.sleep(wait);
+            }
+            session.lastReloadAt = Date.now();
+            session.autoResume = 1;
+            session.beat = Date.now();
+            session.crashedAt = 0;
+            Core.store.set(this.slowSessionKey, session);
+            this.info(`${why} Reloading — continues automatically. ${this.dCount} deleted.`);
+            await Core.sleep(1200);
+            location.reload();
+        },
+
         async slowDelete(resume = false) {
             let session = Core.store.get(this.slowSessionKey, null);
             if (resume) {
@@ -824,15 +855,10 @@
             }
 
             let consecutiveErrors = 0;
-            const maxConsecutiveErrors = 8;
             const more = '[data-testid="tweet"] [data-testid="caret"]';
             let emptyScans = 0;
-            const maxEmptyScans = 12;
             let stuckCount = 0, lastTopId = '';
             let exitReason = '';
-            let waitRounds = 0;
-            const waitSeconds = 300;
-            const stallReloadAfter = 3600;   // 1h of dead timeline => reload the page
 
             try {
             while (true) {
@@ -852,49 +878,37 @@
                 this.hideTimelineSuggestions();
 
                 if (document.querySelectorAll(more).length === 0) {
-                    const retry = Array.from(document.querySelectorAll('[role="button"], button')).find(b => /retry|try again|reload/i.test(b.textContent));
-                    if (retry) retry.click();
-                    this.scrollTimelineMore();
-                    if (++emptyScans >= maxEmptyScans) {
-                        if (waitRounds * waitSeconds >= stallReloadAfter) {
-                            // An hour of dead timeline: either the list is exhausted or the
-                            // page is wedged (X leaks memory until it crashes). If this page
-                            // lifetime deleted nothing AND the reload before it also deleted
-                            // nothing, call it end-of-list; otherwise reload for a clean heap.
-                            if (pageDeletes === 0) {
-                                session.staleReloads = (session.staleReloads || 0) + 1;
-                                if (session.staleReloads >= 2) {
-                                    exitReason = 'the timeline stayed dead for over 2 hours across a reload — the list looks fully deleted';
-                                    break;
-                                }
-                            } else session.staleReloads = 0;
-                            session.crashedAt = 0;
-                            session.autoResume = 1;
-                            session.beat = Date.now();
-                            Core.store.set(this.slowSessionKey, session);
-                            this.info('Timeline dead for 60 minutes — reloading the page to recover. It resumes automatically.');
-                            await Core.sleep(2000);
-                            location.reload();
-                            return;
+                    this.nudgeTimelineLoad();
+                    emptyScans++;
+                    session.beat = Date.now();
+                    Core.store.set(this.slowSessionKey, session);
+                    this.info(`No tweet cells (${emptyScans}/6). Nudging the timeline… ${this.dCount} deleted.`);
+                    if (emptyScans >= 6) {
+                        if (pageDeletes === 0) session.blankReloads = (session.blankReloads || 0) + 1;
+                        else session.blankReloads = 0;
+                        if (session.blankReloads >= 4) {
+                            exitReason = 'timeline stayed empty after several auto-reloads — treating the list as done';
+                            break;
                         }
-                        // X rate-limits the timeline itself during bulk deletes.
-                        // Wait it out, then keep trying instead of quitting.
-                        waitRounds++;
-                        session.beat = Date.now();
-                        Core.store.set(this.slowSessionKey, session);
-                        let s = waitSeconds;
-                        while (s > 0) { s--; this.info(`Timeline stopped loading. Retrying in ${Core.fmtDuration(s)} (stalled ${Math.round((waitRounds * waitSeconds) / 60)}m of 60m). ${this.dCount} deleted.`); await Core.sleep(1000); }
-                        emptyScans = 0;
+                        await this.forceReload(session, 'Tweet cells are not loading.');
+                        return;
                     }
-                    await Core.sleep(6000); continue;
+                    await Core.sleep(2500);
+                    continue;
                 }
-                emptyScans = 0; waitRounds = 0;
+                emptyScans = 0;
+                session.blankReloads = 0;
 
                 const caretEl = document.querySelector(more);
                 const tweetEl = caretEl ? caretEl.closest('[data-testid="tweet"]') : document.querySelector('[data-testid="tweet"]');
                 const topId = this.tweetStatusId(tweetEl) || '';
                 if (topId && this._skippedIds.has(topId)) {
                     this.scrollTimelineMore();
+                    stuckCount++;
+                    if (stuckCount >= 22) {
+                        await this.forceReload(session, 'Could not scroll past a skipped post.');
+                        return;
+                    }
                     continue;
                 }
 
@@ -903,12 +917,17 @@
                 // row). Try one recovery, then stop cleanly instead of spinning.
                 if (topId && topId === lastTopId) stuckCount++;
                 else { stuckCount = 0; lastTopId = topId; }
-                if (stuckCount === 10) {
+                if (stuckCount === 8) {
                     document.body.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
-                    this.scrollTimelineMore();
+                    this.nudgeTimelineLoad();
                 }
-                if (stuckCount >= 20) {
-                    this.info(`Stopped: the same post stayed on top for 20 passes (likely an X rate limit). Wait 10-15 minutes, then press Resume above. ${this.dCount} deleted.`);
+                if (stuckCount === 16 && topId) {
+                    this.skipTweet(tweetEl);
+                    this.info(`Skipping a stuck post and moving on. ${this.dCount} deleted.`);
+                    continue;
+                }
+                if (stuckCount >= 22) {
+                    await this.forceReload(session, 'Timeline stuck on the same post.');
                     return;
                 }
 
@@ -960,33 +979,33 @@
                     Core.store.set(this.slowSessionKey, session);
                     this.updateProgressBar(); await this.maybePause();
                     consecutiveErrors = 0;
+                    session.blankReloads = 0;
                     if (this.dCount % 100 === 0) console.log(`${new Date().toUTCString()} Deleted ${this.dCount} Tweets`);
                 } catch (error) {
                     consecutiveErrors++;
                     document.body.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
-                    const backoff = Math.min(60000, 4000 * consecutiveErrors);
-                    this.info(`Hit a snag (likely a rate limit). Waiting ${Math.round(backoff / 1000)}s. ${this.dCount} deleted.`);
+                    const backoff = Math.min(30000, 3000 * consecutiveErrors);
+                    this.info(`Hit a snag (likely a rate limit). Waiting ${Math.round(backoff / 1000)}s (${consecutiveErrors}/8). ${this.dCount} deleted.`);
                     await Core.sleep(backoff);
-                    if (consecutiveErrors >= maxConsecutiveErrors) {
-                        exitReason = `${maxConsecutiveErrors} consecutive UI errors (usually an X rate limit on deletions)`;
-                        break;
+                    if (consecutiveErrors >= 8) {
+                        await this.forceReload(session, 'Repeated UI errors.');
+                        return;
                     }
                 }
             }
-            if (!exitReason) {
+            if (!exitReason || /fully deleted|treating the list as done/.test(exitReason)) {
                 endSession();
-                this.info(`Finished. Total deleted: ${this.dCount} Tweets. Reload to confirm.`);
-            } else if (exitReason.includes('fully deleted')) {
-                endSession();
-                this.info(`Finished. Total deleted: ${this.dCount} Tweets. ${exitReason}. Reload to confirm.`);
+                this.info(`Finished. Total deleted: ${this.dCount} Tweets. ${exitReason || 'Reload the profile to confirm.'}`);
             } else {
-                this.info(`Stopped early: ${exitReason}. ${this.dCount} deleted so far. Wait 10-15 minutes, then press Resume above.`);
+                await this.forceReload(session, exitReason);
+                return;
             }
             } catch (err) {
-                // OOM or DOM failure mid-run: keep the session alive so the user
-                // can resume instead of losing the place in the list.
                 console.error('[TPM] Slow delete crashed:', err);
-                this.info(`Slow delete crashed (${(err && err.message) || err}). The session is saved — press Resume above to continue.`);
+                session.autoResume = 1;
+                session.beat = Date.now();
+                Core.store.set(this.slowSessionKey, session);
+                await this.forceReload(session, `Slow delete crashed (${(err && err.message) || err}).`);
             }
         }
     };
