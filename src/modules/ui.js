@@ -153,7 +153,7 @@
             ${p} .tpm-btn-danger{background:transparent;border-color:rgba(244,33,46,.5);color:var(--danger)}
             ${p} .tpm-btn-danger:hover{background:rgba(244,33,46,.12)}
             ${p} .tpm-btn[disabled]{opacity:.45;cursor:not-allowed}
-            ${p} .tpm-btns{display:flex;gap:10px;margin-top:8px}
+            ${p} .tpm-btns{display:flex;flex-wrap:wrap;gap:10px;margin-top:8px}
             ${p} .tpm-range{width:100%;height:24px;margin:0;accent-color:var(--acc);cursor:pointer}
             ${p} .tpm-range-scale{display:flex;justify-content:space-between;gap:8px;margin-top:4px;font-size:12px;color:var(--muted);font-weight:600}
             ${p} a{color:var(--acc);text-decoration:none}
