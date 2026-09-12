@@ -32,6 +32,7 @@
         stopFlag: false,
         paused: false,
         running: false,
+        speedLevel: 7,
         // Slow-delete session persistence: long runs leak memory inside X's own
         // page code until the tab crashes ("out of memory"). The session is
         // stored here so a wedged page can reload and resume where it left off.
@@ -85,6 +86,14 @@
               </div>
 
               <div class="tpm-section">
+                <h4>Delete speed</h4>
+                <p>Wait between each delete. Drag toward Slow if the timeline cannot keep up. Works while a run is going.</p>
+                <label class="tpm-label" for="tpm-clean-speed">Delay: <span id="tpm-clean-speed-val">1.2s</span></label>
+                <input id="tpm-clean-speed" class="tpm-range" type="range" min="1" max="10" step="1" value="7">
+                <div class="tpm-range-scale"><span>Slow (5s)</span><span>Fast (0.4s)</span></div>
+              </div>
+
+              <div class="tpm-section">
                 <h4>Auto-pause</h4>
                 <p>Pause periodically to dodge rate limits and account locks.</p>
                 <div class="tpm-row">
@@ -110,6 +119,9 @@
             UI.el('tpm-slowDelete').onclick = () => { if (!this.running) this.slowDelete(); };
             UI.el('tpm-clean-pause').onclick = () => this.togglePause();
             UI.el('tpm-clean-stop').onclick = () => this.stopRun();
+            UI.el('tpm-clean-speed').value = String(Core.store.get('clean.speedLevel', 7));
+            this.syncSpeedLabel();
+            UI.el('tpm-clean-speed').addEventListener('input', () => this.syncSpeedLabel(true));
 
             // Offer a one-click resume when a slow-delete session survived a reload.
             const session = Core.store.get(this.slowSessionKey, null);
@@ -180,9 +192,44 @@
             const session = Core.store.get(this.slowSessionKey, null);
             if (!session || !session.active) return;
             session.userPaused = !!this.paused;
+            session.speedLevel = this.speedLevelFromUi();
             session.beat = Date.now();
             if (this.paused) session.autoResume = 0;
             Core.store.set(this.slowSessionKey, session);
+        },
+
+        speedLevelFromUi() {
+            const n = parseInt(UI.el('tpm-clean-speed')?.value, 10);
+            if (!isNaN(n)) return Math.min(10, Math.max(1, n));
+            return Math.min(10, Math.max(1, this.speedLevel || 7));
+        },
+
+        speedMs() {
+            const table = [0, 5000, 4000, 3000, 2500, 2000, 1600, 1200, 900, 600, 400];
+            return table[this.speedLevelFromUi()] || 1200;
+        },
+
+        syncSpeedLabel(persist) {
+            this.speedLevel = this.speedLevelFromUi();
+            const ms = this.speedMs();
+            const label = UI.el('tpm-clean-speed-val');
+            if (label) label.textContent = ms >= 1000 ? `${(ms / 1000).toFixed(1)}s` : `${ms}ms`;
+            if (persist) {
+                Core.store.set('clean.speedLevel', this.speedLevel);
+                this.persistSlowFlags();
+            }
+        },
+
+        async pace() {
+            await this.waitWhilePaused();
+            if (this.stopFlag) return;
+            let left = this.speedMs();
+            while (left > 0 && !this.stopFlag && !this.paused) {
+                const chunk = Math.min(200, left);
+                await Core.sleep(chunk);
+                left -= chunk;
+            }
+            await this.waitWhilePaused();
         },
 
         togglePause() {
@@ -220,6 +267,7 @@
             const likes = parseInt(UI.el('tpm-spareLikes')?.value, 10);
             this.spareThreshold = isNaN(likes) ? 0 : likes;
             this.liveLikes = !!UI.el('tpm-liveLikes')?.checked;
+            this.syncSpeedLabel();
         },
 
         createProgressBar() {
@@ -564,7 +612,7 @@
                         this._fails = 0;
                         this.dCount++;
                         if (this.dCount <= 3 || this.dCount % 50 === 0) console.log(`[TPM] Deleted ${this.dCount} (last id ${this.tId}).`);
-                        this.updateProgressBar(); await this.maybePause();
+                        this.updateProgressBar(); await this.pace(); await this.maybePause();
                         if (response.headers.get('x-rate-limit-remaining') != null && response.headers.get('x-rate-limit-remaining') < 1) {
                             this.ratelimitreset = response.headers.get('x-rate-limit-reset');
                             let s = this.ratelimitreset - Math.floor(Date.now() / 1000);
@@ -695,7 +743,7 @@
                     continue;
                 }
                 if (response.status === 204) {
-                    this.dCount++; this.updateProgressBar(); await this.maybePause();
+                    this.dCount++; this.updateProgressBar(); await this.pace(); await this.maybePause();
                     if (response.headers.get('x-rate-limit-remaining') != null && response.headers.get('x-rate-limit-remaining') < 1) {
                         this.ratelimitreset = response.headers.get('x-rate-limit-reset');
                         let s = this.ratelimitreset - Math.floor(Date.now() / 1000);
@@ -907,7 +955,8 @@
                     active: true, deleted: 0,
                     skipDays: UI.el('tpm-skipDays').value, spareLikes: UI.el('tpm-spareLikes').value,
                     liveLikes: UI.el('tpm-liveLikes').checked, pauseEvery: UI.el('tpm-pauseEvery').value,
-                    pauseMinutes: UI.el('tpm-pauseMinutes').value
+                    pauseMinutes: UI.el('tpm-pauseMinutes').value,
+                    speedLevel: this.speedLevelFromUi()
                 };
             }
             // Restore the session's settings so this page lifetime continues the same job.
@@ -916,6 +965,8 @@
             UI.el('tpm-liveLikes').checked = !!session.liveLikes;
             UI.el('tpm-pauseEvery').value = session.pauseEvery || 190;
             UI.el('tpm-pauseMinutes').value = session.pauseMinutes || 15;
+            UI.el('tpm-clean-speed').value = String(session.speedLevel || Core.store.get('clean.speedLevel', 7));
+            this.syncSpeedLabel();
             // autoResume is consumed here; only the crash-recovery reloads set it again.
             session.autoResume = 0;
             Core.store.set(this.slowSessionKey, session);
@@ -980,7 +1031,7 @@
             while (true) {
                 await this.waitWhilePaused();
                 if (this.stopFlag) { exitReason = 'stopped by you'; break; }
-                await Core.sleep(1200);
+                await this.pace();
                 if (this.stopFlag) { exitReason = 'stopped by you'; break; }
                 // Crash clock: once X has been out of memory for a full hour the
                 // page will never recover on its own — reload for a clean heap.
