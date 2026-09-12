@@ -29,6 +29,9 @@
         entries: [],
         idKey: '',
         _fails: 0,
+        stopFlag: false,
+        paused: false,
+        running: false,
         // Slow-delete session persistence: long runs leak memory inside X's own
         // page code until the tab crashes ("out of memory"). The session is
         // stored here so a wedged page can reload and resume where it left off.
@@ -94,13 +97,19 @@
                 <h4>Other tools</h4>
                 <div class="tpm-btns"><button id="tpm-exportBookmarks" class="tpm-btn tpm-btn-ghost" type="button">Export bookmarks</button></div>
                 <div class="tpm-btns"><button id="tpm-slowDelete" class="tpm-btn tpm-btn-ghost" type="button">Slow delete without a file</button></div>
-                <p style="margin-top:10px">Slow delete works straight from your profile (no export), ~4000/hour. Only deletes tweets authored by you.</p>
+                <div class="tpm-btns" id="tpm-clean-live" style="display:none">
+                  <button class="tpm-btn tpm-btn-warn" id="tpm-clean-pause" type="button">Pause</button>
+                  <button class="tpm-btn tpm-btn-danger" id="tpm-clean-stop" type="button">Stop</button>
+                </div>
+                <p style="margin-top:10px">Slow delete works straight from your profile (no export), ~4000/hour. Only deletes tweets authored by you. Pause and Stop apply to slow delete and to file-based delete.</p>
               </div>
               <div class="tpm-foot">Cleanup engine: TweetXer v0.9.4 (adapted)</div>`;
 
             UI.el('tpm-file').addEventListener('change', () => this.processFile(), false);
             UI.el('tpm-exportBookmarks').onclick = () => this.exportBookmarks();
-            UI.el('tpm-slowDelete').onclick = () => this.slowDelete();
+            UI.el('tpm-slowDelete').onclick = () => { if (!this.running) this.slowDelete(); };
+            UI.el('tpm-clean-pause').onclick = () => this.togglePause();
+            UI.el('tpm-clean-stop').onclick = () => this.stopRun();
 
             // Offer a one-click resume when a slow-delete session survived a reload.
             const session = Core.store.get(this.slowSessionKey, null);
@@ -114,7 +123,7 @@
                     UI.el('tpm-slow-resume-crash').textContent = 'The last page died — it will auto-resume if this is a recovery reload, or press Resume.';
                 }
                 // Crash recoveries reload with autoResume set: continue hands-free.
-                if (session.autoResume) {
+                if (session.autoResume && !session.userPaused) {
                     const onProfile = Core.username && location.pathname.toLowerCase().includes(`/${Core.username.toLowerCase()}`);
                     if (onProfile) {
                         this.info('Resuming slow delete session…');
@@ -122,14 +131,17 @@
                     } else if (Core.username && !Core.isReservedName(Core.username)) {
                         location.replace(`${Core.baseUrl}/${Core.username}`);
                     }
+                } else if (session.userPaused) {
+                    UI.el('tpm-slow-resume-crash').textContent = 'Paused. Press Resume deleting to continue.';
                 }
             }
-            UI.el('tpm-slow-resume-go').onclick = () => { this.info('Resuming…'); this.slowDelete(true); };
-            UI.el('tpm-slow-resume-stop').onclick = () => {
-                Core.store.set(this.slowSessionKey, null);
-                UI.el('tpm-slow-resume').style.display = 'none';
-                this.info('Slow delete session stopped.');
+            UI.el('tpm-slow-resume-go').onclick = () => {
+                const cur = Core.store.get(this.slowSessionKey, null);
+                if (cur) { cur.userPaused = false; Core.store.set(this.slowSessionKey, cur); }
+                this.info('Resuming…');
+                this.slowDelete(true);
             };
+            UI.el('tpm-slow-resume-stop').onclick = () => this.stopRun();
 
             // Start/cancel for the previewed deletion run. The Start button stays
             // disabled until the user ticks the irreversible-action confirmation.
@@ -149,6 +161,56 @@
         },
 
         info(text) { const el = UI.el('tpm-clean-info'); if (el) el.textContent = text; },
+
+        setLiveButtons() {
+            const live = UI.el('tpm-clean-live');
+            if (live) live.style.display = this.running ? 'flex' : 'none';
+            const pause = UI.el('tpm-clean-pause');
+            if (pause) {
+                pause.textContent = this.paused ? 'Resume' : 'Pause';
+                pause.disabled = !this.running;
+            }
+            const stop = UI.el('tpm-clean-stop');
+            if (stop) stop.disabled = !this.running;
+            const slow = UI.el('tpm-slowDelete');
+            if (slow) slow.disabled = this.running;
+        },
+
+        persistSlowFlags() {
+            const session = Core.store.get(this.slowSessionKey, null);
+            if (!session || !session.active) return;
+            session.userPaused = !!this.paused;
+            session.beat = Date.now();
+            if (this.paused) session.autoResume = 0;
+            Core.store.set(this.slowSessionKey, session);
+        },
+
+        togglePause() {
+            if (!this.running) return;
+            this.paused = !this.paused;
+            this.persistSlowFlags();
+            this.setLiveButtons();
+            this.info(this.paused
+                ? `Paused. ${this.dCount.toLocaleString()} deleted. Press Resume to continue.`
+                : `Resumed. ${this.dCount.toLocaleString()} deleted.`);
+        },
+
+        stopRun() {
+            this.stopFlag = true;
+            this.paused = false;
+            Core.store.set(this.slowSessionKey, null);
+            const rb = UI.el('tpm-slow-resume'); if (rb) rb.style.display = 'none';
+            this.setLiveButtons();
+            this.info(`Stopping… ${this.dCount.toLocaleString()} deleted.`);
+        },
+
+        async waitWhilePaused() {
+            while (this.paused && !this.stopFlag) {
+                this.persistSlowFlags();
+                this.info(`Paused. ${this.dCount.toLocaleString()} deleted. Press Resume to continue.`);
+                await Core.sleep(400);
+            }
+        },
 
         readSettings() {
             const every = parseInt(UI.el('tpm-pauseEvery')?.value, 10);
@@ -239,11 +301,14 @@
         },
 
         async maybePause() {
+            await this.waitWhilePaused();
+            if (this.stopFlag) return;
             if (!this.pauseEvery || this.pauseEvery <= 0) return;
             const done = this.dCount - this.startCount;
             if (done <= 0 || done % this.pauseEvery !== 0) return;
             let remaining = Math.round(this.pauseMinutes * 60);
-            while (remaining > 0) {
+            while (remaining > 0 && !this.stopFlag) {
+                if (this.paused) { await this.waitWhilePaused(); continue; }
                 this.info(`Pausing ${Core.fmtDuration(remaining)} after ${done.toLocaleString()} deletions to avoid rate limits…`);
                 await Core.sleep(1000); remaining--;
             }
@@ -416,7 +481,14 @@
             const run = this._pendingRun;
             this._pendingRun = null;
             this.hidePreview();
-            run();
+            this.running = true;
+            this.stopFlag = false;
+            this.paused = false;
+            this.setLiveButtons();
+            Promise.resolve(run()).finally(() => {
+                this.running = false;
+                this.setLiveButtons();
+            });
         },
 
         // Discard a parsed-but-not-started run and reset the file picker.
@@ -496,7 +568,12 @@
                         if (response.headers.get('x-rate-limit-remaining') != null && response.headers.get('x-rate-limit-remaining') < 1) {
                             this.ratelimitreset = response.headers.get('x-rate-limit-reset');
                             let s = this.ratelimitreset - Math.floor(Date.now() / 1000);
-                            while (s > 0) { s = this.ratelimitreset - Math.floor(Date.now() / 1000); this.info(`Ratelimited. Waiting ${s}s. ${this.dCount} deleted.`); await Core.sleep(1000); }
+                            while (s > 0 && !this.stopFlag) {
+                                if (this.paused) { await this.waitWhilePaused(); continue; }
+                                s = this.ratelimitreset - Math.floor(Date.now() / 1000);
+                                this.info(`Ratelimited. Waiting ${s}s. ${this.dCount} deleted.`);
+                                await Core.sleep(1000);
+                            }
                             resolve('deleted and waiting');
                         } else resolve('deleted');
                     } else if (response.status === 429) {
@@ -504,7 +581,12 @@
                         this.tIds.push(this.tId);
                         const reset = parseInt(response.headers.get('x-rate-limit-reset'), 10);
                         let s = reset ? reset - Math.floor(Date.now() / 1000) : 60;
-                        while (s > 0) { s = reset ? reset - Math.floor(Date.now() / 1000) : s - 1; this.info(`Ratelimited (429). Waiting ${Math.max(0, s)}s. ${this.dCount} deleted.`); await Core.sleep(1000); }
+                        while (s > 0 && !this.stopFlag) {
+                            if (this.paused) { await this.waitWhilePaused(); continue; }
+                            s = reset ? reset - Math.floor(Date.now() / 1000) : s - 1;
+                            this.info(`Ratelimited (429). Waiting ${Math.max(0, s)}s. ${this.dCount} deleted.`);
+                            await Core.sleep(1000);
+                        }
                         resolve('ratelimited');
                     } else {
                         let detail = '';
@@ -542,7 +624,9 @@
         async deleteTweets() {
             const url = await this.graphqlUrl('DeleteTweet', 'VaenaVgh5q5ih7kvyVjgtg');
             console.log(`[TPM] Deleting ${this.tIds.length} tweets via ${url.split('/').slice(5).join('/')}`);
-            while (this.tIds.length > 0) {
+            while (this.tIds.length > 0 && !this.stopFlag) {
+                await this.waitWhilePaused();
+                if (this.stopFlag) break;
                 this.tId = this.tIds.pop();
                 if (this.liveLikes && this.spareThreshold > 0) {
                     const likes = await this.getLikeCount(this.tId);
@@ -558,18 +642,30 @@
                 await this.sendRequest(url);
             }
             this.tId = ''; this.updateProgressBar();
-            this.info(`Done. Deleted ${this.dCount.toLocaleString()} tweets.`);
+            this.info(this.stopFlag
+                ? `Stopped. Deleted ${this.dCount.toLocaleString()} tweets.`
+                : `Done. Deleted ${this.dCount.toLocaleString()} tweets.`);
         },
 
         async deleteFavs() {
             const url = await this.graphqlUrl('UnfavoriteTweet', 'ZYKSe-w7KEslx3JhSIk5LA');
-            while (this.tIds.length > 0) { this.tId = this.tIds.pop(); await this.sendRequest(url); }
-            this.tId = ''; this.updateProgressBar(); this.info(`Done. Removed ${this.dCount.toLocaleString()} likes.`);
+            while (this.tIds.length > 0 && !this.stopFlag) {
+                await this.waitWhilePaused();
+                if (this.stopFlag) break;
+                this.tId = this.tIds.pop();
+                await this.sendRequest(url);
+            }
+            this.tId = ''; this.updateProgressBar();
+            this.info(this.stopFlag
+                ? `Stopped. Removed ${this.dCount.toLocaleString()} likes.`
+                : `Done. Removed ${this.dCount.toLocaleString()} likes.`);
         },
 
         async deleteDMs() {
             const url = await this.graphqlUrl('DMMessageDeleteMutation', 'BJ6DtxA2llfjnRoRjaiIiw');
-            while (this.tIds.length > 0) {
+            while (this.tIds.length > 0 && !this.stopFlag) {
+                await this.waitWhilePaused();
+                if (this.stopFlag) break;
                 this.tId = this.tIds.pop();
                 await this.sendRequest(url, `{"variables":{"messageId":"${this.tId}"},"requestId":""}`);
             }
@@ -578,7 +674,9 @@
 
         async deleteConvos() {
             const retries = {};
-            while (this.tIds.length > 0) {
+            while (this.tIds.length > 0 && !this.stopFlag) {
+                await this.waitWhilePaused();
+                if (this.stopFlag) break;
                 this.tId = this.tIds.pop();
                 const url = Core.baseUrl + this.deleteConvoURL.replace('USER_ID-CONVERSATION_ID', this.tId);
                 let response;
@@ -601,12 +699,23 @@
                     if (response.headers.get('x-rate-limit-remaining') != null && response.headers.get('x-rate-limit-remaining') < 1) {
                         this.ratelimitreset = response.headers.get('x-rate-limit-reset');
                         let s = this.ratelimitreset - Math.floor(Date.now() / 1000);
-                        while (s > 0) { s = this.ratelimitreset - Math.floor(Date.now() / 1000); this.info(`Ratelimited. Waiting ${s}s. ${this.dCount} deleted.`); await Core.sleep(1000); }
+                        while (s > 0 && !this.stopFlag) {
+                            if (this.paused) { await this.waitWhilePaused(); continue; }
+                            s = this.ratelimitreset - Math.floor(Date.now() / 1000);
+                            this.info(`Ratelimited. Waiting ${s}s. ${this.dCount} deleted.`);
+                            await Core.sleep(1000);
+                        }
                     }
                     await Core.sleep(Math.floor(Math.random() * 200));
                 } else if (response.status === 429 || response.status === 420) {
                     this.tIds.push(this.tId);
-                    let s = 300; while (s > 0) { s--; this.info(`Ratelimited. Waiting ${s}s. ${this.dCount} deleted.`); await Core.sleep(1000); }
+                    let s = 300;
+                    while (s > 0 && !this.stopFlag) {
+                        if (this.paused) { await this.waitWhilePaused(); continue; }
+                        s--;
+                        this.info(`Ratelimited. Waiting ${s}s. ${this.dCount} deleted.`);
+                        await Core.sleep(1000);
+                    }
                 } else console.log(response);
             }
             this.tId = ''; this.updateProgressBar();
@@ -768,12 +877,14 @@
         },
 
         async forceReload(session, why) {
+            if (this.stopFlag || this.paused) return;
             const gap = 45000;
             const wait = (session.lastReloadAt || 0) + gap - Date.now();
             if (wait > 0) {
                 this.info(`${why} Waiting ${Math.ceil(wait / 1000)}s so we do not reload-loop. ${this.dCount} deleted.`);
                 await Core.sleep(wait);
             }
+            if (this.stopFlag || this.paused) return;
             session.lastReloadAt = Date.now();
             session.autoResume = 1;
             session.beat = Date.now();
@@ -781,6 +892,7 @@
             Core.store.set(this.slowSessionKey, session);
             this.info(`${why} Reloading — continues automatically. ${this.dCount} deleted.`);
             await Core.sleep(1200);
+            if (this.stopFlag || this.paused) return;
             location.reload();
         },
 
@@ -827,6 +939,10 @@
                 window.addEventListener('unhandledrejection', this._oomWatch);
             }
 
+            this.running = true;
+            this.stopFlag = false;
+            this.paused = false;
+            this.setLiveButtons();
             this.readSettings();
             this._skippedIds = new Set();
             const skipDays = parseInt(UI.el('tpm-skipDays')?.value, 10) || 0;
@@ -862,7 +978,10 @@
 
             try {
             while (true) {
+                await this.waitWhilePaused();
+                if (this.stopFlag) { exitReason = 'stopped by you'; break; }
                 await Core.sleep(1200);
+                if (this.stopFlag) { exitReason = 'stopped by you'; break; }
                 // Crash clock: once X has been out of memory for a full hour the
                 // page will never recover on its own — reload for a clean heap.
                 const live = Core.store.get(this.slowSessionKey, null);
@@ -993,7 +1112,10 @@
                     }
                 }
             }
-            if (!exitReason || /fully deleted|treating the list as done/.test(exitReason)) {
+            if (exitReason === 'stopped by you') {
+                endSession();
+                this.info(`Stopped. Total deleted: ${this.dCount} Tweets.`);
+            } else if (!exitReason || /fully deleted|treating the list as done/.test(exitReason)) {
                 endSession();
                 this.info(`Finished. Total deleted: ${this.dCount} Tweets. ${exitReason || 'Reload the profile to confirm.'}`);
             } else {
@@ -1002,10 +1124,18 @@
             }
             } catch (err) {
                 console.error('[TPM] Slow delete crashed:', err);
-                session.autoResume = 1;
-                session.beat = Date.now();
-                Core.store.set(this.slowSessionKey, session);
-                await this.forceReload(session, `Slow delete crashed (${(err && err.message) || err}).`);
+                if (this.stopFlag) {
+                    endSession();
+                    this.info(`Stopped. Total deleted: ${this.dCount} Tweets.`);
+                } else {
+                    session.autoResume = 1;
+                    session.beat = Date.now();
+                    Core.store.set(this.slowSessionKey, session);
+                    await this.forceReload(session, `Slow delete crashed (${(err && err.message) || err}).`);
+                }
+            } finally {
+                this.running = false;
+                this.setLiveButtons();
             }
         }
     };
