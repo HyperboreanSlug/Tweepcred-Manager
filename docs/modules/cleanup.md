@@ -26,7 +26,7 @@ Auto-pause default **190 actions / 15 min**. Honors `x-rate-limit-*` headers and
 
 ## Maintenance notes
 
-- Slow-delete must **never** `window.scrollTo(0, document.body.scrollHeight)`. X's virtualized timeline unmounts every tweet on a jump-to-bottom (blank page); wheel/trackpad still loads because it moves in small steps. Use `scrollTimelineMore()` (viewport-sized `scrollTop` nudge) and `hideTimelineSuggestions()` (strip UserCell suggestions only — do not gut tweet cells).
+- Slow-delete must **never** `window.scrollTo(0, document.body.scrollHeight)` and must **never** `.remove()` tweet cells. X's virtualizer blanks the page if cells are ripped out or the scroller jumps into spacer space; wheel/trackpad still loads because it moves a little and leaves cells mounted. Use `scrollTimelineMore()` (real overflow scroller, last-tweet `scrollIntoView`, ~30% viewport step, synthetic `wheel`) and `skipTweet()` for spared / not-mine rows. `hideTimelineSuggestions()` may strip UserCell rows only.
 - GraphQL operation ids rotate; deletion uses resolve + fallbacks.
 - `TweetResultByRestId` for live like counts may need manual query-id refresh (see README).
 - Slow delete honors the spare-recent-N-days filter via `tweetDate()` (DOM `<time>` tag, snowflake permalink fallback). Unknown dates are spared, never deleted.

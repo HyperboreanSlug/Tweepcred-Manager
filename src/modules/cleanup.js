@@ -22,6 +22,7 @@
         spareThreshold: 0,
         liveLikes: false,
         sparedCount: 0,
+        _skippedIds: null,
         deleteDMsOneByOne: false,
         bookmarks: [],
         bookmarksNext: '',
@@ -696,11 +697,51 @@
 
         // X virtualizes the profile timeline. Jumping to scrollHeight unmounts
         // every tweet (blank page); wheel/trackpad still works because it moves
-        // a little at a time. Nudge the real scroller — never jump to the bottom.
+        // a little at a time. Nudge the real overflow scroller — never jump, and
+        // never .remove() tweet cells (that desyncs the virtualizer).
+        timelineScroller() {
+            const start = document.querySelector('[data-testid="tweet"]')
+                || document.querySelector('[data-testid="primaryColumn"]')
+                || document.body;
+            let el = start;
+            while (el && el !== document.documentElement) {
+                const oy = getComputedStyle(el).overflowY;
+                if ((oy === 'auto' || oy === 'scroll' || oy === 'overlay') && el.scrollHeight > el.clientHeight + 80) {
+                    return el;
+                }
+                el = el.parentElement;
+            }
+            return document.scrollingElement || document.documentElement;
+        },
+
         scrollTimelineMore() {
-            const scroller = document.scrollingElement || document.documentElement;
-            const step = Math.max(240, Math.floor(window.innerHeight * 0.65));
-            scroller.scrollTop += step;
+            const scroller = this.timelineScroller();
+            const view = scroller.clientHeight || window.innerHeight;
+            const step = Math.min(280, Math.max(140, Math.floor(view * 0.3)));
+            const tweets = document.querySelectorAll('[data-testid="tweet"]');
+            const last = tweets[tweets.length - 1];
+            if (last) last.scrollIntoView({ block: 'end', behavior: 'instant' });
+            const before = scroller.scrollTop;
+            if (typeof scroller.scrollBy === 'function') scroller.scrollBy(0, step);
+            else scroller.scrollTop += step;
+            if (scroller.scrollTop === before) window.scrollBy(0, step);
+            try {
+                scroller.dispatchEvent(new WheelEvent('wheel', {
+                    deltaY: step, deltaMode: 0, bubbles: true, cancelable: true
+                }));
+            } catch (_) { /* ignore */ }
+        },
+
+        skipTweet(tweetEl, spare = false) {
+            if (!this._skippedIds) this._skippedIds = new Set();
+            const id = this.tweetStatusId(tweetEl);
+            if (id) this._skippedIds.add(id);
+            if (spare) {
+                this.sparedCount++;
+                if (this.total > 0) this.total--;
+                this.updateProgressBar();
+            }
+            this.scrollTimelineMore();
         },
 
         // Hide "Who to follow" rows only. The old TweetXer selectors also
@@ -756,6 +797,7 @@
             }
 
             this.readSettings();
+            this._skippedIds = new Set();
             const skipDays = parseInt(UI.el('tpm-skipDays')?.value, 10) || 0;
             const cutoff = Date.now() - skipDays * 86400000;
             const drop = UI.el('tpm-drop'); if (drop) drop.style.display = 'none';
@@ -850,11 +892,15 @@
 
                 const caretEl = document.querySelector(more);
                 const tweetEl = caretEl ? caretEl.closest('[data-testid="tweet"]') : document.querySelector('[data-testid="tweet"]');
+                const topId = this.tweetStatusId(tweetEl) || '';
+                if (topId && this._skippedIds.has(topId)) {
+                    this.scrollTimelineMore();
+                    continue;
+                }
 
                 // Hang watchdog: if the same post sits on top for too many passes,
                 // nothing advances (X silently refusing deletes, or a re-rendered
                 // row). Try one recovery, then stop cleanly instead of spinning.
-                const topId = this.tweetStatusId(tweetEl) || '';
                 if (topId && topId === lastTopId) stuckCount++;
                 else { stuckCount = 0; lastTopId = topId; }
                 if (stuckCount === 10) {
@@ -868,16 +914,16 @@
 
                 if (tweetEl && Core.username) {
                     const author = this.tweetAuthorHandle(tweetEl);
-                    if (author && author !== Core.username.toLowerCase()) { tweetEl.remove(); continue; }
+                    if (author && author !== Core.username.toLowerCase()) { this.skipTweet(tweetEl); continue; }
                 }
                 if (tweetEl && skipDays > 0) {
                     const date = this.tweetDate(tweetEl);
                     // Unknown date => spare it; deleting on a guess is irreversible.
-                    if (!date || date.getTime() > cutoff) { this.sparedCount++; if (this.total > 0) this.total--; tweetEl.remove(); this.updateProgressBar(); continue; }
+                    if (!date || date.getTime() > cutoff) { this.skipTweet(tweetEl, true); continue; }
                 }
                 if (tweetEl && this.spareThreshold > 0) {
                     const likes = this.likesFromTweetElement(tweetEl);
-                    if (likes > this.spareThreshold) { this.sparedCount++; if (this.total > 0) this.total--; tweetEl.remove(); this.updateProgressBar(); continue; }
+                    if (likes > this.spareThreshold) { this.skipTweet(tweetEl, true); continue; }
                 }
 
                 try {
@@ -899,7 +945,7 @@
                         if (menu.textContent.includes('@')) {
                             caret.click();
                             const notMine = moreElement.closest('[data-testid="tweet"]') || document.querySelector('[data-testid="tweet"]');
-                            if (notMine) notMine.remove();
+                            if (notMine) this.skipTweet(notMine);
                         } else {
                             menu.click();
                             const confirmation = await Core.waitForElem('[data-testid="confirmationSheetConfirm"]');
