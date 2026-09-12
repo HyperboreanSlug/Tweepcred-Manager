@@ -911,22 +911,48 @@
         },
 
         clickTimelineRetry() {
-            const btn = Array.from(document.querySelectorAll('[role="button"], button')).find(b =>
-                /retry|try again|reload|see more|show more/i.test((b.textContent || '').trim()));
-            if (btn) btn.click();
-            return !!btn;
+            const now = Date.now();
+            if (this._lastRetryAt && now - this._lastRetryAt < 60000) return false;
+            const col = document.querySelector('[data-testid="primaryColumn"]');
+            if (!col) return false;
+            const btn = Array.from(col.querySelectorAll('[role="button"], button')).find(b => {
+                const t = (b.textContent || '').trim();
+                return /^retry$/i.test(t) || /^try again$/i.test(t);
+            });
+            if (!btn) return false;
+            this._lastRetryAt = now;
+            btn.click();
+            return true;
         },
 
-        nudgeTimelineLoad() {
-            this.clickTimelineRetry();
-            const tabs = document.querySelectorAll('[data-testid="ScrollSnap-List"] a');
-            if (tabs[1]) tabs[1].click();
-            this.scrollTimelineMore();
+        timelineLooksErrored() {
+            if (document.querySelector('[data-testid="tweet"]')) return false;
+            const col = document.querySelector('[data-testid="primaryColumn"]');
+            if (!col) return false;
+            const t = (col.innerText || '').replace(/\s+/g, ' ');
+            return /something went wrong|couldn['’]t load|could not load|try again|timed out|timeout|rate.?limit|please wait/i.test(t);
+        },
+
+        async waitCountdown(seconds, label) {
+            let s = seconds;
+            while (s > 0 && !this.stopFlag) {
+                if (this.paused) { await this.waitWhilePaused(); continue; }
+                if (document.querySelector('[data-testid="tweet"] [data-testid="caret"]')) return true;
+                const cur = Core.store.get(this.slowSessionKey, null);
+                if (cur && cur.active) {
+                    cur.beat = Date.now();
+                    Core.store.set(this.slowSessionKey, cur);
+                }
+                this.info(`${label} ${Core.fmtDuration(s)}. ${this.dCount} deleted.`);
+                await Core.sleep(1000);
+                s--;
+            }
+            return !this.stopFlag;
         },
 
         async forceReload(session, why) {
             if (this.stopFlag || this.paused) return;
-            const gap = 45000;
+            const gap = 600000;
             const wait = (session.lastReloadAt || 0) + gap - Date.now();
             if (wait > 0) {
                 this.info(`${why} Waiting ${Math.ceil(wait / 1000)}s so we do not reload-loop. ${this.dCount} deleted.`);
@@ -1005,9 +1031,11 @@
             this.total = this.TweetCount;
             this.createProgressBar();
 
-            const list = document.querySelectorAll('[data-testid="ScrollSnap-List"] a');
-            if (list[1]) list[1].click();
-            await Core.sleep(2000);
+            if (!resume) {
+                const list = document.querySelectorAll('[data-testid="ScrollSnap-List"] a');
+                if (list[1]) list[1].click();
+                await Core.sleep(2000);
+            }
 
             // Guard against running on the wrong timeline (e.g. the infinite home
             // feed): slow delete only makes sense on your own profile page. If
@@ -1031,8 +1059,6 @@
             while (true) {
                 await this.waitWhilePaused();
                 if (this.stopFlag) { exitReason = 'stopped by you'; break; }
-                await this.pace();
-                if (this.stopFlag) { exitReason = 'stopped by you'; break; }
                 // Crash clock: once X has been out of memory for a full hour the
                 // page will never recover on its own — reload for a clean heap.
                 const live = Core.store.get(this.slowSessionKey, null);
@@ -1048,26 +1074,39 @@
                 this.hideTimelineSuggestions();
 
                 if (document.querySelectorAll(more).length === 0) {
-                    this.nudgeTimelineLoad();
-                    emptyScans++;
                     session.beat = Date.now();
                     Core.store.set(this.slowSessionKey, session);
-                    this.info(`No tweet cells (${emptyScans}/6). Nudging the timeline… ${this.dCount} deleted.`);
-                    if (emptyScans >= 6) {
+                    if (this.timelineLooksErrored()) {
+                        this.info(`Timeline API error. Cooling down 10 minutes before one Retry. ${this.dCount} deleted.`);
+                        await this.waitCountdown(600, 'Timeline API error. Waiting');
+                        if (this.stopFlag) { exitReason = 'stopped by you'; break; }
+                        this.clickTimelineRetry();
+                        await Core.sleep(8000);
+                        continue;
+                    }
+                    this.scrollTimelineMore();
+                    emptyScans++;
+                    this.info(`No tweet cells (${emptyScans}/12). Waiting without hitting the API… ${this.dCount} deleted.`);
+                    if (emptyScans >= 12) {
+                        await this.waitCountdown(300, 'Timeline still empty. Cooling down');
+                        if (this.stopFlag) { exitReason = 'stopped by you'; break; }
+                        if (document.querySelectorAll(more).length) { emptyScans = 0; continue; }
                         if (pageDeletes === 0) session.blankReloads = (session.blankReloads || 0) + 1;
                         else session.blankReloads = 0;
-                        if (session.blankReloads >= 4) {
+                        if (session.blankReloads >= 3) {
                             exitReason = 'timeline stayed empty after several auto-reloads — treating the list as done';
                             break;
                         }
                         await this.forceReload(session, 'Tweet cells are not loading.');
                         return;
                     }
-                    await Core.sleep(2500);
+                    await Core.sleep(5000);
                     continue;
                 }
                 emptyScans = 0;
                 session.blankReloads = 0;
+                await this.pace();
+                if (this.stopFlag) { exitReason = 'stopped by you'; break; }
 
                 const caretEl = document.querySelector(more);
                 const tweetEl = caretEl ? caretEl.closest('[data-testid="tweet"]') : document.querySelector('[data-testid="tweet"]');
@@ -1089,7 +1128,7 @@
                 else { stuckCount = 0; lastTopId = topId; }
                 if (stuckCount === 8) {
                     document.body.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
-                    this.nudgeTimelineLoad();
+                    this.scrollTimelineMore();
                 }
                 if (stuckCount === 16 && topId) {
                     this.skipTweet(tweetEl);

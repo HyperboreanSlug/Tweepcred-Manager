@@ -30,7 +30,8 @@ Auto-pause default **190 actions / 15 min**. Honors `x-rate-limit-*` headers and
 - GraphQL operation ids rotate; deletion uses resolve + fallbacks.
 - `TweetResultByRestId` for live like counts may need manual query-id refresh (see README).
 - Slow delete honors the spare-recent-N-days filter via `tweetDate()` (DOM `<time>` tag, snowflake permalink fallback). Unknown dates are spared, never deleted.
-- Blank / empty cells: 6 nudges (Retry + Posts tab + small scroll), then `forceReload` with `autoResume`. Four consecutive reloads with zero deletes this lifetime => treat the list as done. Reloads are spaced ≥45s.
+- Timeline API error (no tweets + "something went wrong"/timeout text): wait 10 minutes, then click **Retry** once in the primary column. Do not re-click the Posts tab or spam Retry/See more — that rate-limits UserTweets.
+- Blank with no error text: small scroll only, 5s between tries, 12 tries, then 5 min cooldown, then reload (min 10 min between reloads). Three empty reloads with zero deletes => done.
 - Stuck top post: Escape + nudge at 8, skip at 16, reload at 22. Repeated UI errors (8) reload instead of asking for Resume. Outer crashes reload and continue.
 - Pause / Stop (`#tpm-clean-pause`, `#tpm-clean-stop`) apply to slow-delete and file-based delete. Pause persists on the slow session (`userPaused`) and blocks auto-reload. Stop clears the session and does not resume.
 - Delete speed slider (`#tpm-clean-speed`, 1=5s … 7=1.2s … 10=0.4s) is live: `pace()` reads it every wait. Stored as `clean.speedLevel` and on the slow session.
