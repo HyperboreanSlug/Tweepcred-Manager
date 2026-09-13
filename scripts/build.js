@@ -26,6 +26,7 @@ const ORDER = [
   path.join(modulesDir, 'dashboard.js'),
   path.join(modulesDir, 'unfollow.js'),
   path.join(modulesDir, 'cleanup.js'),
+  path.join(modulesDir, 'slowgql.js'),
   path.join(modulesDir, 'followers.js'),
   path.join(modulesDir, 'antibot.js'),
   path.join(modulesDir, 'csvparse.js'),

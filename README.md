@@ -170,7 +170,7 @@ Features:
 Deletes the low-value content that pulls your engagement average down.
 
 - **From your data export** (recommended): [request your data](https://x.com/settings/your_twitter_data/data), unzip it, then drag a file onto the dropzone. Reaches old tweets that no longer appear on your profile.
-- **Slow delete Posts / Replies**: two separate profile-UI runs (~4,000/hour). Posts deletes original tweets; Replies deletes replies. No export needed. Run each tab on its own.
+- **Slow delete Posts / Replies**: two GraphQL runs (no export, no scrolling). Posts deletes original tweets; Replies deletes replies. Same `DeleteTweet` path as a file-based run. Run each list on its own.
 
 Both modes auto-pause at 190 actions by default to match the rate window. **Do not disable auto-pause entirely.**
 
