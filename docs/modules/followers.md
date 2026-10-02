@@ -14,7 +14,7 @@
 |--------|-------------|
 | `Followers.render()` / `onShow()` | Tab UI |
 | `Followers.snapshotFollowers()` | Collect followers (API-first) → history |
-| `Followers.collectFollowersApi(opts)` | Cursor-paginated GraphQL `Followers`; scales to 100k+; returns locked/count/avatar/id per account; null if unavailable |
+| `Followers.collectFollowersApi(opts)` | Cursor-paginated GraphQL `Followers` via `ListGql` (POST). About 50 accounts per page. Reads `core` / `privacy`, not only `legacy`. Null if unavailable. |
 | `Followers.collectFollowersBest(opts)` | API first, DOM-walk fallback; returns `{ accounts, viaApi }` |
 | `Followers.saveSnapshot(accounts, source)` | Shared snapshot writer (manual / antibot / import); quota-safe (handles-only fallback, trims oldest); returns save success |
 | `Followers.exportSnapshotCsv()` / `importSnapshotCsv()` | Latest snapshot → CSV; CSV (first column = handle) → new snapshot |
