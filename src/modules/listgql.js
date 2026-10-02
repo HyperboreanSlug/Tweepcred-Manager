@@ -63,17 +63,24 @@
             if (!handle) return null;
             const counts = user.relationship_counts || {};
             const avatar = (user.avatar && user.avatar.image_url) || '';
+            const rel = user.relationship_perspectives || {};
+            let loc = lg.location;
+            if (loc == null) {
+                const node = user.location;
+                loc = node && typeof node === 'object' ? (node.location || '') : (node || '');
+            }
             let protectedFlag = lg.protected;
             if (protectedFlag == null) protectedFlag = priv.protected;
             return {
                 handle,
                 name: lg.name || core.name || handle,
-                mutual: false,
+                mutual: !!(rel.following && rel.followed_by),
                 private: !!protectedFlag,
                 followers: lg.followers_count != null ? lg.followers_count : (counts.followers != null ? counts.followers : null),
                 following: lg.friends_count != null ? lg.friends_count : (counts.following != null ? counts.following : null),
                 defaultImage: lg.default_profile_image != null ? !!lg.default_profile_image : /default_profile/i.test(avatar),
                 bio: lg.description || (user.profile_bio && user.profile_bio.description) || '',
+                location: loc || '',
                 createdAt: lg.created_at || core.created_at || null,
                 id: user.rest_id || lg.id_str || null
             };
@@ -125,6 +132,8 @@
             let cursor = '';
             let pages = 0;
             let firstOk = false;
+            let qid = queryId;
+            let refreshed = false;
             const maxPages = (opts && opts.maxPages) || 8000;
             while (pages < maxPages && !stop()) {
                 const variables = {
@@ -134,11 +143,19 @@
                 if (cursor) variables.cursor = cursor;
                 let res;
                 try {
-                    res = await this._post(op, queryId, variables);
+                    res = await this._post(op, qid, variables);
                 } catch (e) {
                     console.warn(`[TPM] ${op} request threw:`, e);
                     if (!firstOk) return null;
                     break;
+                }
+                // A stale query id returns 404. Resolve once and retry the same page.
+                if (res.status === 404 && !refreshed) {
+                    delete Core._queryIds[op];
+                    delete Core._queryIdMisses[op];
+                    refreshed = true;
+                    const fresh = await Core.resolveQueryId(op);
+                    if (fresh) { qid = fresh; continue; }
                 }
                 if (res.status === 429) {
                     const reset = parseInt(res.headers.get('x-rate-limit-reset'), 10);

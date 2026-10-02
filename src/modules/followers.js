@@ -29,7 +29,7 @@
             const pane = UI.el('tpm-pane-followers');
             if (!pane) return;
             pane.innerHTML = `
-              <div class="tpm-warn-box">Walks your Following / Followers pages and looks up public profile stats. Stay on the list page while scanning. Respect rate limits — enrichment uses UserByScreenName (~1 req/account).</div>
+              <div class="tpm-warn-box">Follower snapshots and the Following sort use the list endpoint (about 50 accounts per request). A page scroll is used only if that call fails.</div>
 
               <div class="tpm-section">
                 <h4>Follower tracker (snapshots)</h4>
@@ -52,7 +52,7 @@
 
               <div class="tpm-section">
                 <h4>Following list — sort by following count</h4>
-                <p>Scan accounts on your <strong>Following</strong> page, fetch each account's following count, and list them sorted. Does not unfollow anyone.</p>
+                <p>Read your <strong>Following</strong> list and sort it by how many accounts each person follows. Does not unfollow anyone. The list endpoint works from any X page. Open the Following page only if that call fails.</p>
                 <label class="tpm-label" for="tpm-f-sort">Sort by</label>
                 <select id="tpm-f-sort" class="tpm-input">
                   <option value="following_desc">Following count (high → low)</option>
@@ -60,7 +60,7 @@
                   <option value="followers_desc">Followers count (high → low)</option>
                   <option value="name">Handle (A–Z)</option>
                 </select>
-                <label class="tpm-label" for="tpm-f-max">Max accounts to enrich (0 = all scanned)</label>
+                <label class="tpm-label" for="tpm-f-max">Max accounts (0 = all)</label>
                 <input id="tpm-f-max" type="number" class="tpm-input" min="0" value="${Core.store.get('followersMax', 200)}">
                 <div class="tpm-btns">
                   <button class="tpm-btn tpm-btn-primary" id="tpm-f-scan" type="button">Scan &amp; sort following</button>
@@ -398,25 +398,48 @@
 
         async scanAndSortFollowing() {
             if (this.running) return;
-            const path = location.pathname.toLowerCase();
-            if (!/\/following\/?$/.test(path)) {
-                this.setStatus('pause', 'Open your Following page first');
-                alert('Go to your profile → Following, then run Scan & sort again.');
-                return;
-            }
             this.running = true;
             this.stopFlag = false;
             this.rows = [];
             this._setBusy(true);
-            this.setStatus('run', 'Scanning Following list…');
+            this.setStatus('run', 'Reading Following list…');
             try {
+                const max = parseInt(UI.el('tpm-f-max')?.value, 10);
+                const cap = (!max || max <= 0) ? 0 : max;
+                const userId = Core.userId || Core.getUserId();
+                delete Core._queryIdMisses['Following'];
+                const queryId = userId ? await Core.resolveQueryId('Following') : null;
+                let got = 0;
+                const api = queryId ? await ListGql.collect('Following', queryId, String(userId), {
+                    onProgress: (n) => { got = n; this.setNow(`Following list ${n.toLocaleString()}…`); }
+                }, () => this.stopFlag || (cap > 0 && got >= cap)) : null;
+                if (Array.isArray(api)) {
+                    const list = cap > 0 ? api.slice(0, cap) : api;
+                    this.rows = list.map(a => ({
+                        handle: a.handle, name: a.name,
+                        following: a.following ?? null, followers: a.followers ?? null,
+                        location: a.location || '', mutual: !!a.mutual, private: !!a.private,
+                        enriched: true
+                    }));
+                    this.renderTable();
+                    this.setStatus(this.stopFlag ? 'stop' : 'idle',
+                        this.stopFlag ? `Stopped (${this.rows.length} from the list)` : `Done — ${this.rows.length.toLocaleString()} from the list endpoint`);
+                    this.setNow(`Sorted by: ${this.sortMode}. Export if needed.`);
+                    UI.el('tpm-f-export').disabled = this.rows.length === 0;
+                    UI.el('tpm-f-export-json').disabled = this.rows.length === 0;
+                    return;
+                }
+                if (!/\/following\/?$/.test(location.pathname.toLowerCase())) {
+                    this.setStatus('pause', 'List endpoint unavailable. Open your Following page, then retry.');
+                    return;
+                }
+                this.setStatus('run', 'Scanning Following list…');
                 const accounts = await this.collectListHandles({ maxScrolls: 500, stagnantLimit: 6 });
                 if (this.stopFlag) {
                     this.setStatus('stop', 'Stopped');
                     return;
                 }
-                const max = parseInt(UI.el('tpm-f-max')?.value, 10);
-                const toEnrich = (!max || max <= 0) ? accounts : accounts.slice(0, max);
+                const toEnrich = cap > 0 ? accounts.slice(0, cap) : accounts;
                 this.setStatus('run', `Enriching ${toEnrich.length} profiles…`);
 
                 for (let i = 0; i < toEnrich.length && !this.stopFlag; i++) {
@@ -439,10 +462,8 @@
                 }
 
                 // Include non-enriched remainder with null counts
-                if (!max || max <= 0 || max >= accounts.length) {
-                    /* all attempted */
-                } else {
-                    for (const acc of accounts.slice(max)) {
+                if (cap > 0 && cap < accounts.length) {
+                    for (const acc of accounts.slice(cap)) {
                         this.rows.push({
                             handle: acc.handle, name: acc.name,
                             following: null, followers: null, location: '',

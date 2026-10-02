@@ -35,8 +35,9 @@ CSV with header:
 Other lists:
 
 1. Parse the file into `{handle}` / `{id}` entries (deduped).
-2. Live lookup per account (`UserByScreenName` for handles,
-   `UserByRestId` for ids) to read the locked flag.
+2. Live lookup. Numeric ids use `UsersByRestIds` (POST, 100 ids per request).
+   Handles with no id use `UserByScreenName`, one account per request.
+   If the batch call cannot start, ids fall back to `UserByRestId`.
 3. Apply the same classifier as the Anti-bot scan (private / min followers /
    default avatar / bot-like handle / empty bio / recent join) — the filter
    checkboxes and their settings are shared via the `ab.*` storage keys, so
@@ -51,7 +52,8 @@ An account matches only if it matches every selected filter; nothing selected
 
 - Blocks share X's ~200 actions / 15 min window.
 - Auto-pause defaults to 190 / 15 min, same as Cleanup.
-- Lookups also count against GraphQL limits (~1 account / sec).
+- Id lookups use the list GraphQL bucket (about 187 requests / 15 min, 100 ids each).
+- Handle lookups use `UserByScreenName` (about 150 requests / 15 min), with a ~1 s pause.
 - `429` waits out `x-rate-limit-reset`; `Stop` is honored mid-wait.
 
 ## Safety

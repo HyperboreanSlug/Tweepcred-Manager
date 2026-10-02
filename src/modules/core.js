@@ -6,7 +6,7 @@
      *  CORE — shared state, auth and utilities used by every module          *
      * ===================================================================== */
     const Core = {
-        version: '1.6.9',
+        version: '1.7.0',
         baseUrl: `https://${window.location.hostname}`,
         // Public web bearer token (same one the X web app ships). Inherited from
         // TweetXer; required for the GraphQL delete/like endpoints.
@@ -329,17 +329,27 @@
         },
 
         // Shared GraphQL feature flags for UserByScreenName (also used by Dashboard).
+        // Flags from a UserByScreenName call that returned a full profile.
         userByScreenNameFeatures() {
             return JSON.stringify({
-                hidden_profile_subscriptions_enabled: true, rweb_tipjar_consumption_enabled: true,
-                responsive_web_graphql_exclude_directive_enabled: true, verified_phone_label_enabled: false,
+                hidden_profile_subscriptions_enabled: true,
+                profile_label_improvements_pcf_label_in_post_enabled: true,
+                responsive_web_profile_redirect_enabled: true,
+                rweb_tipjar_consumption_enabled: true,
+                verified_phone_label_enabled: false,
                 subscriptions_verification_info_is_identity_verified_enabled: true,
-                subscriptions_verification_info_verified_since_enabled: true, highlights_tweets_tab_ui_enabled: true,
-                responsive_web_twitter_article_notes_tab_enabled: true, subscriptions_feature_can_gift_premium: true,
+                subscriptions_verification_info_verified_since_enabled: true,
+                highlights_tweets_tab_ui_enabled: true,
+                responsive_web_twitter_article_notes_tab_enabled: true,
+                subscriptions_feature_can_gift_premium: true,
                 creator_subscriptions_tweet_preview_api_enabled: true,
                 responsive_web_graphql_skip_user_profile_image_extensions_enabled: false,
                 responsive_web_graphql_timeline_navigation_enabled: true
             });
+        },
+
+        userFieldToggles() {
+            return JSON.stringify({ withAuxiliaryUserLabels: true });
         },
 
         // X moved UserByScreenName / UserByRestId to the nested schema
@@ -385,7 +395,7 @@
             const variables = JSON.stringify({ screen_name, withSafetyModeUserFields: true });
             const features = this.userByScreenNameFeatures();
             const url = `${this.baseUrl}/i/api/graphql/${queryId}/UserByScreenName?` +
-                new URLSearchParams({ variables, features });
+                new URLSearchParams({ variables, features, fieldToggles: this.userFieldToggles() });
             // A 429 mid-scan must not poison every later lookup: wait out the
             // reset, then retry the SAME account — the caller's loop index never
             // advanced, so the scan resumes exactly where it errored.

@@ -69,7 +69,7 @@ Everything lives in one **draggable, minimizable, mobile-friendly** dark glass p
 
 | Path | Role |
 | --- | --- |
-| `src/modules/*.js` | One file per feature (`core`, `follow`, `ui`, `dashboard`, `unfollow`, `followers`, `antibot`, `csvparse`, `blocklist`, `cleanup`, `about`) |
+| `src/modules/*.js` | One file per feature (`core`, `follow`, `ui`, `dashboard`, `unfollow`, `followers`, `listgql`, `batchgql`, `antibot`, `csvparse`, `blocklist`, `cleanup`, `about`) |
 | `docs/modules/*.md` | Per-module maintenance docs |
 | `scripts/build.js` | Concatenates modules into a single dual-mode bundle |
 | `dist/tweepcred-manager.user.js` | Built userscript (install **or** console-paste) |
@@ -119,18 +119,18 @@ You can **look up any public handle** (or your own, auto-filled via the API), an
 **Track followers**
 
 1. Open **your profile → Followers**.
-2. Click **Snapshot followers**. The script scrolls the virtualized list and stores handles in `localStorage` (persistent, last 20 snapshots).
+2. Click **Snapshot followers**. The script reads the Followers list from the API (about 50 accounts per request) and stores handles in `localStorage` (persistent, last 20 snapshots). It scrolls the page only if that call fails.
 3. Later, snapshot again and click **Diff vs previous** for new vs lost followers.
 4. **Export CSV** saves the latest snapshot (handle, name, mutual, private); **Import CSV** loads a handle list (first column) as a snapshot you can diff against. Anti-bot scans also auto-save a snapshot.
 
 **Sort Following by following count**
 
-1. Open **your profile → Following**.
-2. Choose sort (default: following count high → low).
-3. Click **Scan & sort following**. Each visible account is enriched via `UserByScreenName` (followers, following, location).
+1. Choose sort (default: following count high → low).
+2. Click **Scan & sort following**. The Following list endpoint returns counts for about 50 accounts per request. You do not have to keep that page open.
+3. If the list endpoint fails, open **your profile → Following**. The scan then walks the page and looks up each account.
 4. Export **CSV** or **JSON** if needed.
 
-This tab does **not** unfollow anyone. Cap enrichment with “Max accounts” to stay gentle on rate limits. See [`docs/modules/followers.md`](docs/modules/followers.md).
+This tab does **not** unfollow anyone. **Max accounts** still caps the list (0 = all). See [`docs/modules/followers.md`](docs/modules/followers.md).
 
 ### Block list
 
@@ -138,12 +138,12 @@ Blocks the accounts in a list you load — your data archive's **`follower.js` /
 
 1. Open the **Block list** tab and drop the file (CSV, `.txt`, or the archive file) onto the dropzone.
 2. **CSV with a header** (`user_id`, `private`, `followers`, `matches_all_filters` columns) goes **straight to blocking — no live checks**: rows with an id are ready immediately, and rows already flagged in the file bypass the filters.
-3. Other lists: each account is looked up live to check its **private / locked** status (~1/sec, reads against the rate window).
+3. Other lists: numeric ids are looked up in batches of 100 (`UsersByRestIds`). Handles with no id are looked up one at a time.
 4. The preview shows each account as **private / open / not found** and the criteria it matched. Only profiles that resolve are ever blocked.
 5. Keep the **Filters** the way your Anti-bot scan had them — the two tools share the same settings. Private/locked is on by default.
 6. Tick the confirm box, then **Block N accounts**. Auto-pause defaults to **190 / 15 min** to match the block rate window.
 
-> **Heads-up:** archives can list hundreds of thousands of followers. Cap **Max accounts to look up** (default 200) — each lookup and block counts against X's ~200 actions / 15 min limit. See [`docs/modules/blocklist.md`](docs/modules/blocklist.md).
+> **Heads-up:** archives can list hundreds of thousands of followers. Cap **Max accounts to look up** (default 200). Id lookups are 100 per request. Blocks still auto-pause at **190 / 15 min**. See [`docs/modules/blocklist.md`](docs/modules/blocklist.md).
 
 ### Unfollow
 

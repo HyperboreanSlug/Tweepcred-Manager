@@ -161,29 +161,36 @@
             reader.readAsText(file);
         },
 
+        _rowFrom(e, p) {
+            if (!p) return { handle: e.handle || null, id: e.id || null, name: '', private: null, resolved: false };
+            return {
+                handle: p.screenName || e.handle, id: p.id || e.id, name: p.name || '', private: !!p.protected,
+                followers: p.followers ?? null, defaultImage: !!p.defaultProfileImage, bio: p.description || '',
+                createdAt: p.createdAt || null, resolved: true
+            };
+        },
+
         async resolve() {
             this.running = true;
             this.stopFlag = false;
             UI.el('tpm-bl-stop').disabled = false;
             const cap = parseInt(UI.el('tpm-bl-max')?.value, 10) || 0;
             const targets = cap > 0 ? this._pending.slice(0, cap) : this._pending;
-            const total = targets.length;
             const start = Date.now();
+            const found = await BatchGql.lookupEntries(targets, {
+                stop: () => this.stopFlag,
+                note: (t) => this.setNow(t),
+                pause: (t) => this.setStatus('pause', t),
+                run: (t) => this.setStatus('run', t)
+            });
             let failed = 0;
-            for (let i = 0; i < total && !this.stopFlag; i++) {
-                const e = targets[i];
-                this.setNow(`Checking ${e.handle ? '@' + e.handle : 'account ' + e.id} (${i + 1}/${total})…`);
-                let p = null;
-                const onWait = (sec) => this.setStatus('pause', `Rate limited. Waiting ${Core.fmtDuration(sec)} — resumes at ${i + 1}/${total}.`);
-                if (e.id && !e.handle) p = await Core.fetchUserByRestId(e.id, onWait, () => this.stopFlag);
-                else if (e.handle) p = await Core.fetchUserByScreenName(e.handle, onWait, () => this.stopFlag);
-                this.setStatus('run', `Checking ${i + 1}/${total} — ${this.rows.filter(r => r.resolved && r.private).length} confirmed private so far.`);
-                if (!p) { failed++; this.rows.push({ handle: e.handle || null, id: e.id || null, name: '', private: null, resolved: false }); }
-                else { const r = { handle: p.screenName || e.handle, id: p.id || e.id, name: p.name || '', private: !!p.protected,
-                        followers: p.followers ?? null, defaultImage: !!p.defaultProfileImage, bio: p.description || '', createdAt: p.createdAt || null, resolved: true }; this.rows.push(r); }
-                if (i % 10 === 0 || i === total - 1) this.renderResults();
-                await Core.sleep(900 + Core.rand(0, 400));
-            }
+            targets.forEach((e) => {
+                if (!found.has(e)) return;
+                const row = this._rowFrom(e, found.get(e));
+                if (!row.resolved) failed++;
+                this.rows.push(row);
+            });
+            this.renderResults();
             this.setNow('');
             UI.el('tpm-bl-stop').disabled = true;
             this.running = false;

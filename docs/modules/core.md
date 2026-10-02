@@ -15,7 +15,9 @@ Shared state, session auth, GraphQL helpers, localStorage settings, and small ut
 | `Core.init()` | Read cookies, username, install GraphQL query-id sniffer |
 | `Core.apiHeaders([contentType])` | Auth headers for X GraphQL/REST |
 | `Core.resolveQueryId(operationName)` | Sniff or scrape query ids (they rotate) |
-| `Core.fetchUserByScreenName(handle)` | Normalized public profile (followers, following, location, …) |
+| `Core.userByScreenNameFeatures()` | Feature flags for a tested `UserByScreenName` call |
+| `Core.userFieldToggles()` | `withAuxiliaryUserLabels` toggle for that call |
+| `Core.fetchUserByScreenName(handle)` | Normalized public profile (followers, following, location, …). Reads `core` when `legacy` is absent. |
 | `Core.userPostedTerm(screenName, terms)` | SearchTimeline check for posted phrases |
 | `Core.store.get/set(key, val)` | Namespaced `localStorage` (`tpm:…`) |
 | `Core.sleep`, `Core.rand`, `Core.parseCount`, `Core.escapeHtml`, `Core.waitForElem` | Utilities |

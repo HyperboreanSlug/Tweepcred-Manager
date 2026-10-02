@@ -29,7 +29,7 @@ List rows no longer include `legacy.screen_name`. Read:
 
 | Member | Description |
 |--------|-------------|
-| `ListGql.collect(op, queryId, userId, opts, shouldStop)` | Cursor-paginate. `op` is `Followers` or `Following`. Returns account objects, or null if page 1 fails. |
-| `ListGql.mapUser(result)` | One user result → `{ handle, name, private, followers, following, ... }`. |
+| `ListGql.collect(op, queryId, userId, opts, shouldStop)` | Cursor-paginate. `op` is `Followers` or `Following`. Returns account objects, or null if page 1 fails. A 404 clears the query id, resolves it once, and retries that page. |
+| `ListGql.mapUser(result)` | One user result → `{ handle, name, private, followers, following, location, mutual, ... }`. `mutual` is true only when `relationship_perspectives.following` and `followed_by` are both true. |
 
 `Followers.collectFollowersApi` calls `ListGql.collect`.

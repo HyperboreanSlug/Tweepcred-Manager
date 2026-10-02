@@ -130,16 +130,8 @@
             this._statsFetching = true;
             try {
                 const variables = JSON.stringify({ screen_name, withSafetyModeUserFields: true });
-                const features = JSON.stringify({
-                    hidden_profile_subscriptions_enabled: true, rweb_tipjar_consumption_enabled: true,
-                    responsive_web_graphql_exclude_directive_enabled: true, verified_phone_label_enabled: false,
-                    subscriptions_verification_info_is_identity_verified_enabled: true,
-                    subscriptions_verification_info_verified_since_enabled: true, highlights_tweets_tab_ui_enabled: true,
-                    responsive_web_twitter_article_notes_tab_enabled: true, subscriptions_feature_can_gift_premium: true,
-                    creator_subscriptions_tweet_preview_api_enabled: true,
-                    responsive_web_graphql_skip_user_profile_image_extensions_enabled: false,
-                    responsive_web_graphql_timeline_navigation_enabled: true
-                });
+                const features = Core.userByScreenNameFeatures();
+                const fieldToggles = Core.userFieldToggles();
                 // At userscript boot X's api bundle (which holds the query ids) is
                 // often still loading — resolve, give it a moment, resolve again.
                 let queryId = await Core.resolveQueryId('UserByScreenName');
@@ -154,7 +146,7 @@
                     console.log('[TPM] Could not resolve the UserByScreenName query id from the page bundles.');
                     return;
                 }
-                const url = `${Core.baseUrl}/i/api/graphql/${queryId}/UserByScreenName?` + new URLSearchParams({ variables, features });
+                const url = `${Core.baseUrl}/i/api/graphql/${queryId}/UserByScreenName?` + new URLSearchParams({ variables, features, fieldToggles });
                 const res = await fetch(url, {
                     headers: Core.apiHeaders(), referrer: `${Core.baseUrl}/${screen_name}`,
                     referrerPolicy: 'strict-origin-when-cross-origin', method: 'GET', mode: 'cors',
@@ -168,19 +160,22 @@
                     return;
                 }
                 const result = (await res.json())?.data?.user?.result;
-                const lg = result?.legacy;
-                if (!lg) { this.dstatus(`X returned no profile data for @${screen_name} (suspended, protected, or renamed?).`); return; }
+                const profile = Core.mapProfile(result, screen_name);
+                if (!profile || (profile.followers == null && profile.following == null)) {
+                    this.dstatus(`X returned no profile data for @${screen_name} (suspended, protected, or renamed?).`);
+                    return;
+                }
                 const set = (id, v) => { const el = UI.el(id); if (el && v != null) el.value = v; };
                 const fill = force ? set : ((id, v) => this.setIfEmpty(id, v));
-                fill('tpm-d-followers', lg.followers_count);
-                fill('tpm-d-following', lg.friends_count);
-                if (lg.created_at) {
-                    const days = Math.max(0, Math.round((Date.now() - new Date(lg.created_at).getTime()) / 86400000));
+                fill('tpm-d-followers', profile.followers);
+                fill('tpm-d-following', profile.following);
+                if (profile.createdAt) {
+                    const days = Math.max(0, Math.round((Date.now() - new Date(profile.createdAt).getTime()) / 86400000));
                     fill('tpm-d-age', days);
                 }
                 // The 2023 mass formula's isVerified is LEGACY verification only
                 // (safety.verified), NOT X Premium / blue. Reproduce that exactly.
-                UI.el('tpm-d-verified').checked = !!lg.verified;
+                UI.el('tpm-d-verified').checked = !!(result.legacy && result.legacy.verified);
                 this.dstatus('');
                 if (!force) this._statsFetched = true;
                 this.calculate();

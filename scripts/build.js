@@ -28,6 +28,7 @@ const ORDER = [
   path.join(modulesDir, 'cleanup.js'),
   path.join(modulesDir, 'slowgql.js'),
   path.join(modulesDir, 'listgql.js'),
+  path.join(modulesDir, 'batchgql.js'),
   path.join(modulesDir, 'followers.js'),
   path.join(modulesDir, 'antibot.js'),
   path.join(modulesDir, 'csvparse.js'),
