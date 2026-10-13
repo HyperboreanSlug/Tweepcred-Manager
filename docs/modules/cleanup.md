@@ -26,7 +26,8 @@ Auto-pause default **190 actions / 15 min**. Honors `x-rate-limit-*` headers and
 
 ## Maintenance notes
 
-- Slow-delete lists via `SlowGql` (`UserTweets` / `UserTweetsAndReplies`) then deletes with `Cleanup.deleteTweets()` (`DeleteTweet`). Do not scroll the profile or click the caret menu.
+- Slow-delete lists via `SlowGql` (`UserTweetsAndReplies`) then deletes with `Cleanup.deleteTweets()` (`DeleteTweet`). Do not scroll the profile or click the caret menu.
+- Fifteen delete failures set `stopFlag` and keep the remaining ids. The run does not report Finished.
 - GraphQL operation ids rotate; listing and deletion use `Core.resolveQueryId` plus fallbacks.
 - `TweetResultByRestId` for live like counts (file-based + optional live likes) may need query-id refresh (see README).
 - Age filter uses `Core.snowflakeToDate`. Unknown ids are spared. Likes come from the list payload unless "Fetch live like counts" is on.

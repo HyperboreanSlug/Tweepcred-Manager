@@ -610,7 +610,8 @@
                             // Sustained failures => stale query id, expired login or rotated
                             // CSRF. Stop instead of burning the rest of the list doing nothing.
                             if (this._fails >= 15) {
-                                this.tIds = [];
+                                this.tIds.push(this.tId);
+                                this.stopFlag = true;
                                 this.info(`Stopped: ${this._fails} consecutive failures. "${msg}". The delete query id or your login/CSRF token is likely stale — reload X and rerun.`);
                                 console.error('[TPM] Aborting: repeated GraphQL failures.');
                             }
@@ -652,7 +653,8 @@
                         console.warn(`[TPM] Delete HTTP ${response.status} for ${this.tId}. ${detail}`);
                         this.info(`Delete failed (HTTP ${response.status}). ${this.dCount} done.`);
                         if (this._fails >= 15) {
-                            this.tIds = [];
+                            this.tIds.push(this.tId);
+                            this.stopFlag = true;
                             this.info(`Stopped: 15 consecutive HTTP ${response.status} errors. Reload X / re-log in and retry.`);
                         }
                         resolve('error');

@@ -56,16 +56,17 @@
             Object.values(obj).forEach((v) => { if (v && typeof v === 'object') this._walk(v, uid, out); });
         },
 
+        // Bottom only. ShowMoreThreads expands one thread and stalls the profile scan.
         _cursors(obj, out) {
             if (!obj) return;
             if (Array.isArray(obj)) { obj.forEach((v) => this._cursors(v, out)); return; }
             if (typeof obj !== 'object') return;
-            if ((obj.cursorType === 'Bottom' || obj.cursorType === 'ShowMoreThreads') && obj.value) out.push(obj.value);
+            if (obj.cursorType === 'Bottom' && obj.value) out.push(obj.value);
             Object.values(obj).forEach((v) => { if (v && typeof v === 'object') this._cursors(v, out); });
         },
 
         async _post(op, variables) {
-            const fallback = op === 'UserTweets' ? 'OeFjWKHutsuyWXZGmLr02A' : '-4Ujf5pYzDdr_qY8qxgF9A';
+            const fallback = 'bnsYxFljT6y98rFwiGr3fw';
             const qid = (await Core.resolveQueryId(op)) || fallback;
             const url = `${Core.baseUrl}/i/api/graphql/${qid}/${op}`;
             const res = await fetch(url, {
@@ -79,13 +80,18 @@
             return res;
         },
 
+        // UserTweets (posts only) returns about eight pages, then an empty page
+        // with the same Bottom cursor. Older posts still exist on
+        // UserTweetsAndReplies. Both tabs use that timeline. eligible() splits them.
         async collect(tab, onPage) {
             const uid = String(Core.userId || Core.getUserId() || '');
             if (!uid) throw new Error('Not logged in (no twid cookie).');
-            const op = tab === 'posts' ? 'UserTweets' : 'UserTweetsAndReplies';
+            const op = 'UserTweetsAndReplies';
             const seen = {};
             let cursor = null;
-            for (let page = 0; page < 200; page++) {
+            let emptyRun = 0;
+            let page = 0;
+            while (page < 4000) {
                 if (Cleanup.stopFlag) break;
                 await Cleanup.waitWhilePaused();
                 const variables = {
@@ -111,16 +117,23 @@
                     continue;
                 }
                 if (!res.ok) throw new Error(`List HTTP ${res.status}`);
+                page += 1;
                 const data = await res.json();
                 const batch = [];
                 this._walk(data, uid, batch);
+                if (Array.isArray(data.errors) && data.errors.length && !batch.length) {
+                    throw new Error(data.errors[0].message || 'List failed');
+                }
                 let neu = 0;
                 batch.forEach((t) => { if (!seen[t.id]) { seen[t.id] = t; neu++; } });
                 const cursors = [];
                 this._cursors(data, cursors);
-                if (onPage) onPage(page + 1, neu, Object.keys(seen).length);
-                if (!cursors.length || neu === 0) break;
-                cursor = cursors[cursors.length - 1];
+                if (onPage) onPage(page, neu, Object.keys(seen).length);
+                const next = cursors.length ? cursors[cursors.length - 1] : null;
+                if (!next || next === cursor) break;
+                emptyRun = neu === 0 ? emptyRun + 1 : 0;
+                if (emptyRun >= 5) break;
+                cursor = next;
                 await Core.sleep(800);
             }
             return Object.values(seen);
