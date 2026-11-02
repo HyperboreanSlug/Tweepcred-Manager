@@ -80,8 +80,8 @@
                 <input id="tpm-skipCount" type="number" class="tpm-input" placeholder="0">
                 <label class="tpm-label" for="tpm-spareLikes">Spare tweets with more than N likes (needs tweets.js)</label>
                 <input id="tpm-spareLikes" type="number" class="tpm-input" placeholder="e.g. 100">
-                <label class="tpm-label" for="tpm-skipDays">Spare tweets from the last N days</label>
-                <input id="tpm-skipDays" type="number" class="tpm-input" placeholder="e.g. 30">
+                <label class="tpm-label" for="tpm-skipDays">Spare tweets from the last N days (decimals: 0.5 = 12h, 0.25 = 6h)</label>
+                <input id="tpm-skipDays" type="number" min="0" step="any" class="tpm-input" placeholder="e.g. 0.5">
                 <label class="tpm-check"><input type="checkbox" id="tpm-liveLikes"> Fetch live like counts from X (works with tweet-headers.js; one extra request per tweet)</label>
               </div>
 
@@ -346,7 +346,7 @@
         },
 
         filterByDays(ids) {
-            const days = parseInt(UI.el('tpm-skipDays')?.value, 10) || 0;
+            const days = parseFloat(UI.el('tpm-skipDays')?.value) || 0;
             if (days <= 0) return ids;
             const cutoff = Date.now() - days * 86400000;
             const epoch = Core.snowflakeEpoch;
@@ -878,7 +878,7 @@
                     this.info(`Resuming ${this.tIds.length} remaining ${tab}…`);
                 } else {
                     this.info(`Listing live ${tab} via GraphQL…`);
-                    const skipDays = parseInt(UI.el('tpm-skipDays')?.value, 10) || 0;
+                    const skipDays = parseFloat(UI.el('tpm-skipDays')?.value) || 0;
                     const all = await SlowGql.collect(tab, (page, neu, total) => {
                         this.info(`Listing ${tab}: page ${page}, ${total} found…`);
                     });
