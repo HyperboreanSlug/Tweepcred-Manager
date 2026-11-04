@@ -32,6 +32,7 @@ const ORDER = [
   path.join(modulesDir, 'followers.js'),
   path.join(modulesDir, 'antibot.js'),
   path.join(modulesDir, 'csvparse.js'),
+  path.join(modulesDir, 'moderation.js'),
   path.join(modulesDir, 'blocklist.js'),
   path.join(modulesDir, 'about.js'),
   path.join(src, 'boot.js'),

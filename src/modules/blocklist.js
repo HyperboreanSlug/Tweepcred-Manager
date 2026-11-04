@@ -84,6 +84,7 @@
             drop.addEventListener('drop', (e) => {
                 if (e.dataTransfer.files && e.dataTransfer.files.length) { fi.files = e.dataTransfer.files; this.loadFile(e.dataTransfer.files[0]); }
             });
+            if (typeof Moderation !== 'undefined') Moderation.onShow();
         },
 
         // Same filter set and storage keys as Antibot — tuning one tab tunes both.
